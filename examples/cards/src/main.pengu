@@ -1,0 +1,79 @@
+import tela
+import std.web.dom as dom
+import std.web.event as event
+import std.web.js as js
+
+rune Card:
+    id as string
+    title as string
+
+rune App:
+    cards as tela.Signal of list of Card
+    count as tela.Signal of int
+    empty as tela.Signal of bool
+    next_id as int
+
+weave app into ref to App:
+    static var a as App is with cards is (calling tela.signal with (list of Card)), count is (calling tela.signal with 0), empty is (calling tela.signal with true), next_id is 0
+    return sigil of a
+
+weave on_add with ev as event.Event into void:
+    var a as ref to App is calling app
+    set a->next_id is a->next_id + 1
+    var id as string is "card-{a->next_id}"
+    var title as string is "Card {a->next_id}"
+    var card as Card is with id is id, title is title
+    var current as list of Card is calling a->cards.get
+    var next as list of Card is current
+    calling next.push with card
+    var cs as tela.Signal of list of Card is a->cards
+    calling cs.set with next
+    calling tela.set_int with a->count, next.len
+    calling tela.set_bool with a->empty, false
+
+weave make_el with tag as string into dom.Element:
+    var r as result of dom.Element to js.JsError is calling dom.create with tag
+    if not r.is_ok:
+        calling tela.panic with "cards: cannot create " + tag
+    return r.value
+
+weave render_card with c as ref to Card into dom.Element:
+    var el as dom.Element is calling make_el with "article"
+    calling dom.add_class with el, "card"
+    var h as dom.Element is calling make_el with "h2"
+    calling dom.set_text with h, c->title
+    calling dom.append with el, h
+    var p as dom.Element is calling make_el with "p"
+    calling dom.set_text with p, "key: {c->id}"
+    calling dom.append with el, p
+    return el
+
+weave update_card with c as ref to Card, el as dom.Element into void:
+    var hr as result of dom.Element to js.JsError is calling dom.query_required with "h2"
+    if hr.is_ok:
+        calling dom.set_text with hr.value, c->title
+
+weave main into int:
+    var a as ref to App is calling app
+    calling tela.register_int with "count", a->count
+    calling tela.register_handler with "add", on_add
+    calling tela.mount with "#app"
+    var list_el as result of dom.Element to js.JsError is calling dom.query_required with "#cards"
+    if list_el.is_ok:
+        var card_key as weave with c as ref to Card into string is card_id
+        var sub as tela.Subscription is calling tela.each with card_key, render_card, update_card, list_el.value, a->cards
+    var empty_el as result of dom.Element to js.JsError is calling dom.query_required with "#empty"
+    if empty_el.is_ok:
+        var sub2 as tela.Subscription is calling tela.conditional with render_empty, render_none, empty_el.value, a->empty
+    return 0
+
+weave card_id with c as ref to Card into string:
+    return c->id
+
+weave render_empty with dummy as int into tela.Elem:
+    var el as dom.Element is calling make_el with "p"
+    calling dom.set_text with el, "No cards yet"
+    return el
+
+weave render_none with dummy as int into tela.Elem:
+    return calling make_el with "span"

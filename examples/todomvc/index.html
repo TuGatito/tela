@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>tela todo</title>
+<style>
+.done span { text-decoration: line-through; opacity: .6 }
+.selected { font-weight: bold }
+</style></head>
+<body>
+<main id="app">
+  <h1>todos</h1>
+  <input id="new-todo" placeholder="What needs to be done?" data-tela-on-keydown="add_key">
+  <button data-tela-on-click="add_click">add</button>
+  <input type="checkbox" data-tela-on-change="toggle_all">
+  <ul id="todo-list"></ul>
+  <p data-tela-show="empty">nothing to do</p>
+  <span data-tela-text="left"></span>
+  <button data-tela-on-click="all" data-tela-class-selected="all_sel">all</button>
+  <button data-tela-on-click="active" data-tela-class-selected="active_sel">active</button>
+  <button data-tela-on-click="done" data-tela-class-selected="done_sel">done</button>
+  <button data-tela-show="has_done" data-tela-on-click="clear">clear completed</button>
+</main>
+<script src="todomvc.js"></script>
+</body>
+</html>

@@ -1,0 +1,1091 @@
+## tela — capa reactiva ligera para PenguScript/WASM.
+##
+## Señales explícitas, bindings declarativos `data-tela-*` y reconciliación
+## keyed. Sin eval, sin VDOM y sin estado global implícito: las señales se
+## registran por nombre y el runtime vive en un singleton de función.
+
+import std.memoria
+import std.scrolls
+import std.spark
+import std.web.dom as dom
+import std.web.event as event
+import std.web.js as js
+import std.web as web
+
+## Identificador estable de una señal o de un observer.
+alias Id as u64
+
+## Una celda reactiva. `value` es el valor actual y `subs` los observers que
+## la leyeron durante su última ejecución.
+rune Cell shard T derive Drop:
+    value as T
+    subs as list of u64
+
+## Handle de señal. El dueño del handle es la aplicación; para transferirlo al
+## registry se usa `register_*`, que libera la celda en `shutdown`.
+rune Signal shard T:
+    id as u64
+    cell as ref to Cell of T
+
+## Handle de efecto. Se libera explícitamente con `dispose_effect`.
+rune Effect:
+    id as u64
+
+## Observer interno del runtime.
+rune Observer:
+    run as weave with ctx as ref to void into void
+    ctx as ref to void
+    alive as bool
+    dirty as bool
+
+## Suscripción devuelta por `effect`, `bind_*`, `each` y `when`.
+rune Subscription:
+    effect_id as u64
+    has_cleanup as bool
+    cleanup as weave with ctx as ref to void into void
+    ctx as ref to void
+
+## Entrada de texto ya formateada. `ctx` apunta a la `Cell<T>` original.
+rune TextEntry:
+    get as weave with ctx as ref to void into string
+    free as weave with ctx as ref to void into void
+    ctx as ref to void
+
+## Entrada booleana (show/class/checked).
+rune BoolEntry:
+    get as weave with ctx as ref to void into bool
+    set as weave with ctx as ref to void, v as bool into void
+    free as weave with ctx as ref to void into void
+    ctx as ref to void
+
+## Entrada de input de texto (two-way).
+rune ValueEntry:
+    get as weave with ctx as ref to void into string
+    set as weave with ctx as ref to void, v as string into void
+    free as weave with ctx as ref to void into void
+    ctx as ref to void
+
+## Alias público de un handler DOM.
+alias Handler as weave with ev as event.Event into void
+alias Elem as dom.Element
+
+## Runtime único. Vive en un `static var` de función; no hay `var` de módulo.
+rune Runtime:
+    next_id as u64
+    observers as map of u64 to ref to Observer
+    queue as list of u64
+    current as u64
+    scheduled as bool
+    batch_depth as int
+    mounted as bool
+    mount_subs as list of Subscription
+    listeners as list of dom.Listener
+    text_entries as map of string to TextEntry
+    bool_entries as map of string to BoolEntry
+    value_entries as map of string to ValueEntry
+    handlers as map of string to u64
+    input_bound as bool
+    change_bound as bool
+
+weave rt into ref to Runtime:
+    static var r as Runtime is with next_id is 1, observers is map of u64 to ref to Observer, queue is list of u64, current is 0, scheduled is false, batch_depth is 0, mounted is false, mount_subs is list of Subscription, listeners is list of dom.Listener, text_entries is map of string to TextEntry, bool_entries is map of string to BoolEntry, value_entries is map of string to ValueEntry, handlers is map of string to u64, input_bound is false, change_bound is false
+    return sigil of r
+
+weave next_id into u64:
+    var r as ref to Runtime is calling rt
+    var id as u64 is r->next_id
+    set r->next_id is id + 1
+    return id
+
+weave panic with message as string into void:
+    calling spark.panic with message
+
+# ---------------------------------------------------------------- observers
+
+weave add_observer with run as weave with ctx as ref to void into void, ctx as ref to void into u64:
+    var r as ref to Runtime is calling rt
+    var id as u64 is calling next_id
+    var o as ref to Observer is calling memoria.alloc of Observer
+    set o->run is run
+    set o->ctx is ctx
+    set o->alive is true
+    set o->dirty is false
+    calling r->observers.put with id, o
+    return id
+
+weave observer_at with id as u64 into ref to Observer:
+    var r as ref to Runtime is calling rt
+    return calling r->observers.get with id
+
+weave mark_dirty with id as u64 into void:
+    var o as ref to Observer is calling observer_at with id
+    if not o->alive or o->dirty:
+        return
+    set o->dirty is true
+    var r as ref to Runtime is calling rt
+    calling r->queue.push with id
+    calling schedule
+
+weave run_observer with id as u64 into void:
+    var r as ref to Runtime is calling rt
+    var o as ref to Observer is calling observer_at with id
+    if not o->alive:
+        return
+    set o->dirty is false
+    set r->current is id
+    calling o->run with o->ctx
+    set r->current is 0
+
+weave flush into void:
+    var r as ref to Runtime is calling rt
+    if r->batch_depth > 0:
+        return
+    set r->scheduled is false
+    while r->queue.len > 0:
+        var id as u64 is calling r->queue.pop
+        calling run_observer with id
+
+weave flush_cb with arg as ref to void into void:
+    calling flush
+
+weave schedule into void:
+    var r as ref to Runtime is calling rt
+    if r->scheduled or r->batch_depth > 0:
+        return
+    set r->scheduled is true
+    when wasm:
+        calling web.set_timeout with flush_cb, 0.0, null
+
+## Fuerza un flush pendiente. Útil en tests y al final de un handler.
+weave flush_now into void:
+    calling flush
+
+# ------------------------------------------------------------------- signals
+
+## Crea una señal con `initial` y transfiere la celda al llamador.
+weave signal shard T with initial as T into Signal of T:
+    var c as ref to Cell of T is calling memoria.alloc of Cell of T
+    set c->value is initial
+    set c->subs is list of u64
+    return with id is calling next_id, cell is c
+
+## Lee el valor actual y registra la dependencia si hay un observer activo.
+## Escritura concreta para `Signal<int>` (evita una especialización errónea
+## del método genérico cuando se llama desde un handler de evento).
+weave set_int with s as (Signal of int), v as int into void:
+    set s.cell->value is v
+    var r as ref to Runtime is calling rt
+    for id in s.cell->subs:
+        calling mark_dirty with id
+    calling schedule
+
+## Escritura concreta para `Signal<bool>`.
+weave set_bool with s as (Signal of bool), v as bool into void:
+    set s.cell->value is v
+    var r as ref to Runtime is calling rt
+    for id in s.cell->subs:
+        calling mark_dirty with id
+    calling schedule
+
+enchanting Signal shard T:
+    weave get into T:
+        var r as ref to Runtime is calling rt
+        if r->current != 0:
+            var already as bool is false
+            for s in self->cell->subs:
+                if s == r->current:
+                    set already is true
+            if not already:
+                calling self->cell->subs.push with r->current
+        return self->cell->value
+
+    ## Escribe el valor y marca a los suscriptores.
+    weave set with v as T into void:
+        set self->cell->value is v
+        for sub in self->cell->subs:
+            calling mark_dirty with sub
+        calling schedule
+
+    ## Aplica una función pura al valor actual.
+    weave update with f as weave with v as T into T into void:
+        var current as T is calling self.get
+        calling self.set with (calling f with current)
+
+    ## Libera la celda. No debe llamarse si la señal fue registrada.
+    weave dispose into void:
+        banish self->cell
+
+## Efecto que corre `run` ya y se re-ejecuta al cambiar sus dependencias.
+weave effect with run as weave with ctx as ref to void into void, ctx as ref to void into Effect:
+    var id as u64 is calling add_observer with run, ctx
+    calling run_observer with id
+    return with id is id
+
+## Igual que `effect`, con contexto explícito.
+weave effect_with with run as weave with ctx as ref to void into void, ctx as ref to void into Effect:
+    return calling effect with run, ctx
+
+weave dispose_effect with e as Effect into void:
+    var o as ref to Observer is calling observer_at with e.id
+    set o->alive is false
+
+## Deshace una suscripción: mata el efecto y ejecuta su cleanup.
+enchanting Subscription:
+    weave dispose into void:
+        if self->effect_id != 0:
+            calling dispose_effect with (with id is self->effect_id)
+        if self->has_cleanup:
+            calling self->cleanup with self->ctx
+        set self->has_cleanup is false
+        set self->effect_id is 0
+
+## Agrupa escrituras: el flush ocurre al salir del bloque.
+weave batch with work as weave into void into void:
+    var r as ref to Runtime is calling rt
+    set r->batch_depth is r->batch_depth + 1
+    calling work
+    set r->batch_depth is r->batch_depth - 1
+    if r->batch_depth == 0:
+        calling flush
+
+## Versión con contexto para no capturar.
+weave batch_with with work as weave with ctx as ref to void into void, ctx as ref to void into void:
+    var r as ref to Runtime is calling rt
+    set r->batch_depth is r->batch_depth + 1
+    calling work with ctx
+    set r->batch_depth is r->batch_depth - 1
+    if r->batch_depth == 0:
+        calling flush
+
+# ------------------------------------------------------------------ derived
+
+rune Derived shard A, B:
+    source as ref to Cell of A
+    f as weave with a as A into B
+    value as B
+
+## Derivada de una señal con una función pura `A -> B`.
+weave derived1 shard A, B with f as (weave with a as A into B), src as Signal of A into Derived of A, B:
+    return with source is src.cell, f is f, value is (calling f with src.cell->value)
+
+enchanting Derived shard A, B:
+    weave get into B:
+        var r as ref to Runtime is calling rt
+        if r->current != 0:
+            var already as bool is false
+            for s in self->source->subs:
+                if s == r->current:
+                    set already is true
+            if not already:
+                calling self->source->subs.push with r->current
+        set self->value is calling self->f with self->source->value
+        return self->value
+
+    weave dispose into void:
+        banish self
+
+# ----------------------------------------------------------------- registry
+
+weave text_of_string with ctx as ref to void into string:
+    var c as ref to Cell of string is transmute ctx to ref to Cell of string
+    var r as ref to Runtime is calling rt
+    if r->current != 0:
+        var already as bool is false
+        for s in c->subs:
+            if s == r->current:
+                set already is true
+        if not already:
+            calling c->subs.push with r->current
+    return c->value
+
+weave text_of_int with ctx as ref to void into string:
+    var c as ref to Cell of int is transmute ctx to ref to Cell of int
+    var r as ref to Runtime is calling rt
+    if r->current != 0:
+        var already as bool is false
+        for s in c->subs:
+            if s == r->current:
+                set already is true
+        if not already:
+            calling c->subs.push with r->current
+    return calling spark.str_int with c->value
+
+weave text_of_float with ctx as ref to void into string:
+    var c as ref to Cell of float is transmute ctx to ref to Cell of float
+    var r as ref to Runtime is calling rt
+    if r->current != 0:
+        var already as bool is false
+        for s in c->subs:
+            if s == r->current:
+                set already is true
+        if not already:
+            calling c->subs.push with r->current
+    return calling spark.str_float with c->value
+
+weave text_of_bool_text with ctx as ref to void into string:
+    var c as ref to Cell of bool is transmute ctx to ref to Cell of bool
+    var r as ref to Runtime is calling rt
+    if r->current != 0:
+        var already as bool is false
+        for s in c->subs:
+            if s == r->current:
+                set already is true
+        if not already:
+            calling c->subs.push with r->current
+    return calling spark.str_bool with c->value
+
+weave bool_of_bool with ctx as ref to void into bool:
+    var c as ref to Cell of bool is transmute ctx to ref to Cell of bool
+    var r as ref to Runtime is calling rt
+    if r->current != 0:
+        var already as bool is false
+        for s in c->subs:
+            if s == r->current:
+                set already is true
+        if not already:
+            calling c->subs.push with r->current
+    return c->value
+
+weave nop_free with ctx as ref to void into void:
+    return
+
+weave free_int_cell with ctx as ref to void into void:
+    var c as ref to Cell of int is transmute ctx to ref to Cell of int
+    banish c
+
+weave free_float_cell with ctx as ref to void into void:
+    var c as ref to Cell of float is transmute ctx to ref to Cell of float
+    banish c
+
+weave free_bool_cell with ctx as ref to void into void:
+    var c as ref to Cell of bool is transmute ctx to ref to Cell of bool
+    banish c
+
+weave register_text with name as string, s as Signal of string into void:
+    var r as ref to Runtime is calling rt
+    if calling r->text_entries.contains with name:
+        calling panic with "tela: duplicate signal name: " + name
+    var e as TextEntry is with get is text_of_string, free is nop_free, ctx is transmute s.cell to ref to void
+    calling r->text_entries.put with name, e
+
+weave register_int with name as string, s as Signal of int into void:
+    var r as ref to Runtime is calling rt
+    if calling r->text_entries.contains with name:
+        calling panic with "tela: duplicate signal name: " + name
+    var e as TextEntry is with get is text_of_int, free is nop_free, ctx is transmute s.cell to ref to void
+    calling r->text_entries.put with name, e
+
+weave register_float with name as string, s as Signal of float into void:
+    var r as ref to Runtime is calling rt
+    if calling r->text_entries.contains with name:
+        calling panic with "tela: duplicate signal name: " + name
+    var e as TextEntry is with get is text_of_float, free is nop_free, ctx is transmute s.cell to ref to void
+    calling r->text_entries.put with name, e
+
+weave register_bool_text with name as string, s as Signal of bool into void:
+    var r as ref to Runtime is calling rt
+    if calling r->text_entries.contains with name:
+        calling panic with "tela: duplicate signal name: " + name
+    var e as TextEntry is with get is text_of_bool_text, free is nop_free, ctx is transmute s.cell to ref to void
+    calling r->text_entries.put with name, e
+
+weave register_bool with name as string, s as Signal of bool into void:
+    var r as ref to Runtime is calling rt
+    if calling r->bool_entries.contains with name:
+        calling panic with "tela: duplicate bool name: " + name
+    var e as BoolEntry is with get is bool_of_bool, set is bool_set_bool, free is nop_free, ctx is transmute s.cell to ref to void
+    calling r->bool_entries.put with name, e
+
+weave get_text with name as string into TextEntry:
+    var r as ref to Runtime is calling rt
+    if not calling r->text_entries.contains with name:
+        calling panic with "tela: unknown text signal: " + name
+    return calling r->text_entries.get with name
+
+weave get_bool with name as string into BoolEntry:
+    var r as ref to Runtime is calling rt
+    if not calling r->bool_entries.contains with name:
+        calling panic with "tela: unknown bool signal: " + name
+    return calling r->bool_entries.get with name
+
+weave register_handler with name as string, h as Handler into void:
+    var r as ref to Runtime is calling rt
+    if calling r->handlers.contains with name:
+        calling panic with "tela: duplicate handler name: " + name
+    calling r->handlers.put with name, (transmute h to u64)
+
+weave handler_index with name as string into int:
+    var r as ref to Runtime is calling rt
+    if not calling r->handlers.contains with name:
+        calling panic with "tela: unknown handler: " + name
+    return 0
+
+weave free_all_entries into void:
+    var r as ref to Runtime is calling rt
+    for k, e in r->text_entries:
+        calling e.free with e.ctx
+    for k, e in r->bool_entries:
+        calling e.free with e.ctx
+    for k, e in r->value_entries:
+        calling e.free with e.ctx
+    calling r->text_entries.clear
+    calling r->bool_entries.clear
+    calling r->value_entries.clear
+    calling r->handlers.clear
+
+## Libera registry, bindings y observers. La app no debe usar tela después.
+weave shutdown into void:
+    var r as ref to Runtime is calling rt
+    calling unmount
+    for id, o in r->observers:
+        var op as ref to Observer is o
+        set op->alive is false
+        banish op
+    calling r->observers.clear
+    calling r->queue.clear
+    calling free_all_entries
+
+# ------------------------------------------------------------------ bindings
+
+rune TextBinding:
+    node as dom.Element
+    entry as TextEntry
+    owns as bool
+
+rune BoolBinding:
+    node as dom.Element
+    entry as BoolEntry
+    owns as bool
+
+rune ClassBinding:
+    node as dom.Element
+    name as string
+    entry as BoolEntry
+    owns as bool
+
+rune AttrBinding:
+    node as dom.Element
+    name as string
+    entry as TextEntry
+    owns as bool
+
+rune StyleBinding:
+    node as dom.Element
+    prop as string
+    entry as TextEntry
+    owns as bool
+
+rune HtmlBinding:
+    node as dom.Element
+    entry as TextEntry
+    owns as bool
+
+rune ValueBinding:
+    node as dom.Element
+    entry as ValueEntry
+
+rune CheckedBinding:
+    node as dom.Element
+    entry as BoolEntry
+
+weave text_binding_run with ctx as ref to void into void:
+    var b as ref to TextBinding is transmute ctx to ref to TextBinding
+    var v as string is calling b->entry.get with b->entry.ctx
+    calling dom.set_text with b->node, v
+
+weave bool_binding_run with ctx as ref to void into void:
+    var b as ref to BoolBinding is transmute ctx to ref to BoolBinding
+    var v as bool is calling b->entry.get with b->entry.ctx
+    if v:
+        calling dom.remove_attr with b->node, "hidden"
+    else:
+        calling dom.set_attr with b->node, "hidden", "hidden"
+
+weave class_binding_run with ctx as ref to void into void:
+    var b as ref to ClassBinding is transmute ctx to ref to ClassBinding
+    var v as bool is calling b->entry.get with b->entry.ctx
+    if v:
+        calling dom.add_class with b->node, b->name
+    else:
+        calling dom.remove_class with b->node, b->name
+
+weave attr_binding_run with ctx as ref to void into void:
+    var b as ref to AttrBinding is transmute ctx to ref to AttrBinding
+    var v as string is calling b->entry.get with b->entry.ctx
+    calling dom.set_attr with b->node, b->name, v
+
+weave style_binding_run with ctx as ref to void into void:
+    var b as ref to StyleBinding is transmute ctx to ref to StyleBinding
+    var v as string is calling b->entry.get with b->entry.ctx
+    calling dom.set_style with b->node, b->prop, v
+
+weave html_binding_run with ctx as ref to void into void:
+    var b as ref to HtmlBinding is transmute ctx to ref to HtmlBinding
+    var v as string is calling b->entry.get with b->entry.ctx
+    calling dom.set_html_unsafe with b->node, v
+
+weave value_binding_run with ctx as ref to void into void:
+    var b as ref to ValueBinding is transmute ctx to ref to ValueBinding
+    var v as string is calling b->entry.get with b->entry.ctx
+    calling dom.set_value with b->node, v
+
+weave free_text_binding with ctx as ref to void into void:
+    var b as ref to TextBinding is transmute ctx to ref to TextBinding
+    if b->owns:
+        calling b->entry.free with b->entry.ctx
+    banish b
+
+weave free_bool_binding with ctx as ref to void into void:
+    var b as ref to BoolBinding is transmute ctx to ref to BoolBinding
+    if b->owns:
+        calling b->entry.free with b->entry.ctx
+    banish b
+
+weave free_class_binding with ctx as ref to void into void:
+    var b as ref to ClassBinding is transmute ctx to ref to ClassBinding
+    if b->owns:
+        calling b->entry.free with b->entry.ctx
+    banish b
+
+weave free_attr_binding with ctx as ref to void into void:
+    var b as ref to AttrBinding is transmute ctx to ref to AttrBinding
+    if b->owns:
+        calling b->entry.free with b->entry.ctx
+    banish b
+
+weave free_style_binding with ctx as ref to void into void:
+    var b as ref to StyleBinding is transmute ctx to ref to StyleBinding
+    if b->owns:
+        calling b->entry.free with b->entry.ctx
+    banish b
+
+weave free_html_binding with ctx as ref to void into void:
+    var b as ref to HtmlBinding is transmute ctx to ref to HtmlBinding
+    if b->owns:
+        calling b->entry.free with b->entry.ctx
+    banish b
+
+weave make_sub with effect_id as u64, cleanup as (weave with ctx as ref to void into void), ctx as ref to void into Subscription:
+    return with effect_id is effect_id, has_cleanup is true, cleanup is cleanup, ctx is ctx
+
+weave text_entry_of with name as string into TextEntry:
+    return calling get_text with name
+
+weave bool_entry_of with name as string into BoolEntry:
+    return calling get_bool with name
+
+weave bind_text_entry with node as dom.Element, e as TextEntry, owns as bool into Subscription:
+    var b as ref to TextBinding is calling memoria.alloc of TextBinding
+    set b->node is node
+    set b->entry is e
+    set b->owns is owns
+    var ef as Effect is calling effect with text_binding_run, transmute b to ref to void
+    return calling make_sub with ef.id, free_text_binding, transmute b to ref to void
+
+weave bind_bool_entry with node as dom.Element, e as BoolEntry, owns as bool into Subscription:
+    var b as ref to BoolBinding is calling memoria.alloc of BoolBinding
+    set b->node is node
+    set b->entry is e
+    set b->owns is owns
+    var ef as Effect is calling effect with bool_binding_run, transmute b to ref to void
+    return calling make_sub with ef.id, free_bool_binding, transmute b to ref to void
+
+## Bindea `node.textContent` a una señal de string. Transfiere la señal.
+weave bind_text with node as dom.Element, s as Signal of string into Subscription:
+    var e as TextEntry is with get is text_of_string, free is nop_free, ctx is transmute s.cell to ref to void
+    return calling bind_text_entry with node, e, true
+
+## Bindea `textContent` a una señal int ya formateada.
+weave bind_int with node as dom.Element, s as Signal of int into Subscription:
+    var e as TextEntry is with get is text_of_int, free is nop_free, ctx is transmute s.cell to ref to void
+    return calling bind_text_entry with node, e, true
+
+## Bindea `textContent` a una señal float ya formateada.
+weave bind_float with node as dom.Element, s as Signal of float into Subscription:
+    var e as TextEntry is with get is text_of_float, free is nop_free, ctx is transmute s.cell to ref to void
+    return calling bind_text_entry with node, e, true
+
+## Bindea `textContent` a una señal bool ya formateada.
+weave bind_bool_text with node as dom.Element, s as Signal of bool into Subscription:
+    var e as TextEntry is with get is text_of_bool_text, free is nop_free, ctx is transmute s.cell to ref to void
+    return calling bind_text_entry with node, e, true
+
+## Bindea el atributo `hidden` a una señal bool.
+weave bind_show with node as dom.Element, s as Signal of bool into Subscription:
+    var e as BoolEntry is with get is bool_of_bool, set is bool_set_bool, free is nop_free, ctx is transmute s.cell to ref to void
+    return calling bind_bool_entry with node, e, true
+
+## Bindea una clase a una señal bool.
+weave bind_class with node as dom.Element, name as string, s as Signal of bool into Subscription:
+    var e as BoolEntry is with get is bool_of_bool, set is bool_set_bool, free is nop_free, ctx is transmute s.cell to ref to void
+    var b as ref to ClassBinding is calling memoria.alloc of ClassBinding
+    set b->node is node
+    set b->name is name
+    set b->entry is e
+    set b->owns is true
+    var ef as Effect is calling effect with class_binding_run, transmute b to ref to void
+    return calling make_sub with ef.id, free_class_binding, transmute b to ref to void
+
+## Bindea un atributo a una señal de string.
+weave bind_attr with node as dom.Element, name as string, s as Signal of string into Subscription:
+    var e as TextEntry is with get is text_of_string, free is nop_free, ctx is transmute s.cell to ref to void
+    var b as ref to AttrBinding is calling memoria.alloc of AttrBinding
+    set b->node is node
+    set b->name is name
+    set b->entry is e
+    set b->owns is true
+    var ef as Effect is calling effect with attr_binding_run, transmute b to ref to void
+    return calling make_sub with ef.id, free_attr_binding, transmute b to ref to void
+
+## Bindea una propiedad CSS a una señal de string.
+weave bind_style with node as dom.Element, prop as string, s as Signal of string into Subscription:
+    var e as TextEntry is with get is text_of_string, free is nop_free, ctx is transmute s.cell to ref to void
+    var b as ref to StyleBinding is calling memoria.alloc of StyleBinding
+    set b->node is node
+    set b->prop is prop
+    set b->entry is e
+    set b->owns is true
+    var ef as Effect is calling effect with style_binding_run, transmute b to ref to void
+    return calling make_sub with ef.id, free_style_binding, transmute b to ref to void
+
+## Bindea `innerHTML` sin escapar. El nombre lo dice: es una escotilla XSS.
+weave bind_html_unsafe with node as dom.Element, s as Signal of string into Subscription:
+    var e as TextEntry is with get is text_of_string, free is nop_free, ctx is transmute s.cell to ref to void
+    var b as ref to HtmlBinding is calling memoria.alloc of HtmlBinding
+    set b->node is node
+    set b->entry is e
+    set b->owns is true
+    var ef as Effect is calling effect with html_binding_run, transmute b to ref to void
+    return calling make_sub with ef.id, free_html_binding, transmute b to ref to void
+
+# --------------------------------------------------------------- two-way DOM
+
+weave value_get_string with ctx as ref to void into string:
+    var c as ref to Cell of string is transmute ctx to ref to Cell of string
+    var r as ref to Runtime is calling rt
+    if r->current != 0:
+        var already as bool is false
+        for s in c->subs:
+            if s == r->current:
+                set already is true
+        if not already:
+            calling c->subs.push with r->current
+    return c->value
+
+weave value_set_string with ctx as ref to void, v as string into void:
+    var c as ref to Cell of string is transmute ctx to ref to Cell of string
+    set c->value is v
+    for sub in c->subs:
+        calling mark_dirty with sub
+    calling schedule
+
+weave bool_set_bool with ctx as ref to void, v as bool into void:
+    var c as ref to Cell of bool is transmute ctx to ref to Cell of bool
+    set c->value is v
+    for sub in c->subs:
+        calling mark_dirty with sub
+    calling schedule
+
+weave register_value with name as string, s as Signal of string into void:
+    var r as ref to Runtime is calling rt
+    if calling r->value_entries.contains with name:
+        calling panic with "tela: duplicate value name: " + name
+    var e as ValueEntry is with get is value_get_string, set is value_set_string, free is nop_free, ctx is transmute s.cell to ref to void
+    calling r->value_entries.put with name, e
+
+weave get_value with name as string into ValueEntry:
+    var r as ref to Runtime is calling rt
+    if not calling r->value_entries.contains with name:
+        calling panic with "tela: unknown value signal: " + name
+    return calling r->value_entries.get with name
+
+weave checked_binding_run with ctx as ref to void into void:
+    var b as ref to CheckedBinding is transmute ctx to ref to CheckedBinding
+    var v as bool is calling b->entry.get with b->entry.ctx
+    var r as result of bool to js.JsError is calling dom.set_checked with b->node, v
+
+weave free_checked_binding with ctx as ref to void into void:
+    var b as ref to CheckedBinding is transmute ctx to ref to CheckedBinding
+    banish b
+
+weave bind_checked_entry with node as dom.Element, e as BoolEntry into Subscription:
+    var b as ref to CheckedBinding is calling memoria.alloc of CheckedBinding
+    set b->node is node
+    set b->entry is e
+    var ef as Effect is calling effect with checked_binding_run, transmute b to ref to void
+    return calling make_sub with ef.id, free_checked_binding, transmute b to ref to void
+
+weave bind_value_entry with node as dom.Element, e as ValueEntry into Subscription:
+    var b as ref to ValueBinding is calling memoria.alloc of ValueBinding
+    set b->node is node
+    set b->entry is e
+    var ef as Effect is calling effect with value_binding_run, transmute b to ref to void
+    return calling make_sub with ef.id, free_value_binding, transmute b to ref to void
+
+weave free_value_binding with ctx as ref to void into void:
+    var b as ref to ValueBinding is transmute ctx to ref to ValueBinding
+    banish b
+
+## Bindea un input two-way por nombre registrado con `register_value`.
+weave bind_value with node as dom.Element, name as string into Subscription:
+    return calling bind_value_entry with node, (calling get_value with name)
+
+weave bind_checked with node as dom.Element, name as string into Subscription:
+    var e as BoolEntry is calling get_bool with name
+    return calling bind_checked_entry with node, e
+
+weave on_input with ev as event.Event into void:
+    var tr as result of js.JsValue to js.JsError is calling event.target with ev
+    if not tr.is_ok:
+        return
+    var tv as js.JsValue is tr.value
+    var er as result of dom.Element to js.JsError is calling dom.wrap with tv
+    if not er.is_ok:
+        return
+    var el as dom.Element is er.value
+    var nr as result of maybe string to js.JsError is calling dom.get_attr with el, "data-tela-value"
+    if not nr.is_ok:
+        calling dom.free with (sigil of el)
+        return
+    if nr.value is present:
+        var name as string is nr.value.value
+        var r as ref to Runtime is calling rt
+        if calling r->value_entries.contains with name:
+            var e as ValueEntry is calling get_value with name
+            var vr as result of maybe string to js.JsError is calling dom.value with el
+            if vr.is_ok and vr.value is present:
+                var sv as string is vr.value.value
+                calling e.set with e.ctx, sv
+    calling dom.free with (sigil of el)
+
+weave on_change with ev as event.Event into void:
+    var tr as result of js.JsValue to js.JsError is calling event.target with ev
+    if not tr.is_ok:
+        return
+    var er as result of dom.Element to js.JsError is calling dom.wrap with tr.value
+    if not er.is_ok:
+        return
+    var el as dom.Element is er.value
+    var nr as result of maybe string to js.JsError is calling dom.get_attr with el, "data-tela-checked"
+    if nr.is_ok and nr.value is present:
+        var name as string is nr.value.value
+        var r as ref to Runtime is calling rt
+        if calling r->bool_entries.contains with name:
+            var e as BoolEntry is calling get_bool with name
+            var cv as bool is calling dom.checked with el
+            calling e.set with e.ctx, cv
+    calling dom.free with (sigil of el)
+
+# -------------------------------------------------------------------- mount
+
+weave attr_value with node as dom.Element, name as string into string:
+    var r as result of maybe string to js.JsError is calling dom.get_attr with node, name
+    if not r.is_ok:
+        calling panic with "tela: cannot read attribute " + name
+    if r.value is present:
+        return r.value.value
+    return ""
+
+weave add_listener with node as dom.Element, kind as string, h as Handler into void:
+    var r as result of dom.Listener to js.JsError is calling dom.on with node, kind, h
+    if not r.is_ok:
+        calling panic with "tela: cannot listen to " + kind
+    var rt0 as ref to Runtime is calling rt
+    calling rt0->listeners.push with r.value
+
+weave call_handler with name as string, ev as event.Event into void:
+    var r as ref to Runtime is calling rt
+    var addr as u64 is calling r->handlers.get with name
+    var h as Handler is transmute addr to Handler
+    calling h with ev
+
+weave dispatch_event with ev as event.Event into void:
+    var tr as result of js.JsValue to js.JsError is calling event.target with ev
+    if not tr.is_ok:
+        return
+    var er as result of dom.Element to js.JsError is calling dom.wrap with tr.value
+    if not er.is_ok:
+        return
+    var kr as result of string to js.JsError is calling event.kind with ev
+    if not kr.is_ok:
+        return
+    var an as string is "data-tela-on-" + kr.value
+    var ar as result of maybe string to js.JsError is calling dom.get_attr with er.value, an
+    if not ar.is_ok or ar.value is not present:
+        return
+    calling call_handler with ar.value.value, ev
+
+weave bind_attr_entry with node as dom.Element, name as string, e as TextEntry into Subscription:
+    var b as ref to AttrBinding is calling memoria.alloc of AttrBinding
+    set b->node is node
+    set b->name is name
+    set b->entry is e
+    set b->owns is false
+    var ef as Effect is calling effect with attr_binding_run, transmute b to ref to void
+    return calling make_sub with ef.id, free_attr_binding, transmute b to ref to void
+
+weave bind_class_entry with node as dom.Element, name as string, e as BoolEntry into Subscription:
+    var b as ref to ClassBinding is calling memoria.alloc of ClassBinding
+    set b->node is node
+    set b->name is name
+    set b->entry is e
+    set b->owns is false
+    var ef as Effect is calling effect with class_binding_run, transmute b to ref to void
+    return calling make_sub with ef.id, free_class_binding, transmute b to ref to void
+
+weave bind_style_entry with node as dom.Element, prop as string, e as TextEntry into Subscription:
+    var b as ref to StyleBinding is calling memoria.alloc of StyleBinding
+    set b->node is node
+    set b->prop is prop
+    set b->entry is e
+    set b->owns is false
+    var ef as Effect is calling effect with style_binding_run, transmute b to ref to void
+    return calling make_sub with ef.id, free_style_binding, transmute b to ref to void
+
+weave bind_html_entry with node as dom.Element, e as TextEntry into Subscription:
+    var b as ref to HtmlBinding is calling memoria.alloc of HtmlBinding
+    set b->node is node
+    set b->entry is e
+    set b->owns is false
+    var ef as Effect is calling effect with html_binding_run, transmute b to ref to void
+    return calling make_sub with ef.id, free_html_binding, transmute b to ref to void
+
+weave mount_add with sub as Subscription into void:
+    var r as ref to Runtime is calling rt
+    calling r->mount_subs.push with sub
+
+weave apply_attr with node as dom.Element, attr as string into void:
+    if attr == "data-tela-text":
+        var name as string is calling attr_value with node, attr
+        calling mount_add with (calling bind_text_entry with node, (calling get_text with name), false)
+        return
+    if attr == "data-tela-html-unsafe":
+        var name as string is calling attr_value with node, attr
+        calling mount_add with (calling bind_html_entry with node, (calling get_text with name))
+        return
+    if attr == "data-tela-show":
+        var name as string is calling attr_value with node, attr
+        calling mount_add with (calling bind_bool_entry with node, (calling get_bool with name), false)
+        return
+    if attr == "data-tela-value":
+        var name as string is calling attr_value with node, attr
+        calling mount_add with (calling bind_value_entry with node, (calling get_value with name))
+        return
+    if attr == "data-tela-checked":
+        var name as string is calling attr_value with node, attr
+        calling mount_add with (calling bind_checked_entry with node, (calling get_bool with name))
+        return
+    if calling scrolls.starts_with with attr, "data-tela-attr-":
+        var name as string is calling attr_value with node, attr
+        var field as string is calling attr.get_substring with 15, attr.len
+        calling mount_add with (calling bind_attr_entry with node, field, (calling get_text with name))
+        return
+    if calling scrolls.starts_with with attr, "data-tela-class-":
+        var name as string is calling attr_value with node, attr
+        var field as string is calling attr.get_substring with 16, attr.len
+        calling mount_add with (calling bind_class_entry with node, field, (calling get_bool with name))
+        return
+    if calling scrolls.starts_with with attr, "data-tela-style-":
+        var name as string is calling attr_value with node, attr
+        var field as string is calling attr.get_substring with 16, attr.len
+        calling mount_add with (calling bind_style_entry with node, field, (calling get_text with name))
+        return
+    if calling scrolls.starts_with with attr, "data-tela-on-":
+        var name as string is calling attr_value with node, attr
+        var kind as string is calling attr.get_substring with 13, attr.len
+        calling add_listener with node, kind, dispatch_event
+        return
+    if attr == "data-tela-each" or attr == "data-tela-if":
+        calling panic with "tela: data-tela-each/if are v0.2; use tela.each/tela.when"
+    calling panic with "tela: unknown attribute " + attr
+
+weave apply_node with node as dom.Element into void:
+    var r as result of list of string to js.JsError is calling dom.attribute_names with node
+    if not r.is_ok:
+        calling panic with "tela: cannot read attributes"
+    for attr in r.value:
+        if calling scrolls.starts_with with attr, "data-tela-":
+            calling apply_attr with node, attr
+
+weave install_global_listeners into void:
+    var r as ref to Runtime is calling rt
+    if not r->input_bound:
+        var dr as result of dom.Element to js.JsError is calling dom.document
+        if dr.is_ok:
+            calling add_listener with dr.value, "input", on_input
+        set r->input_bound is true
+    if not r->change_bound:
+        var dr2 as result of dom.Element to js.JsError is calling dom.document
+        if dr2.is_ok:
+            calling add_listener with dr2.value, "change", on_change
+        set r->change_bound is true
+
+## Escanea `root_selector`, conecta los `data-tela-*` y los registra.
+weave mount with root_selector as string into void:
+    var r as ref to Runtime is calling rt
+    if r->mounted:
+        calling panic with "tela: already mounted"
+    var qr as result of dom.Element to js.JsError is calling dom.query_required with root_selector
+    if not qr.is_ok:
+        calling panic with "tela: mount root not found: " + root_selector
+    var root as dom.Element is qr.value
+    calling apply_node with root
+    var allr as result of list of dom.Element to js.JsError is calling dom.query_all with "*"
+    if allr.is_ok:
+        for node in allr.value:
+            calling apply_node with node
+    calling install_global_listeners
+    set r->mounted is true
+
+## Libera bindings, listeners y efectos creados por `mount`.
+weave unmount into void:
+    var r as ref to Runtime is calling rt
+    for s in r->mount_subs:
+        calling s.dispose
+    calling r->mount_subs.clear
+    var li as int is 0
+    while li < r->listeners.len:
+        var lv as dom.Listener is (r->listeners at li)
+        calling dom.free_listener with (sigil of lv)
+        set li is li + 1
+    calling r->listeners.clear
+    set r->mounted is false
+    set r->input_bound is false
+    set r->change_bound is false
+
+# --------------------------------------------------------------------- each
+
+rune EachState shard T:
+    container as dom.Element
+    source as ref to Cell of list of T
+    key_fn as weave with item as ref to T into string
+    render_fn as weave with item as ref to T into Elem
+    update_fn as weave with item as ref to T, node as Elem into void
+    keys as list of string
+    nodes as map of string to dom.Element
+    items as list of T
+
+weave each_run shard T with ctx as ref to void into void:
+    var st as ref to EachState of T is transmute ctx to ref to EachState of T
+    var r as ref to Runtime is calling rt
+    if r->current != 0:
+        var already as bool is false
+        for s in st->source->subs:
+            if s == r->current:
+                set already is true
+        if not already:
+            calling st->source->subs.push with r->current
+    var items as list of T is st->source->value
+    var new_keys as list of string is list of string
+    var new_nodes as map of string to dom.Element is map of string to dom.Element
+    for item in items:
+        var key as string is calling st->key_fn with sigil of item
+        calling new_keys.push with key
+        if calling st->nodes.contains with key:
+            var node as dom.Element is calling st->nodes.get with key
+            calling st->update_fn with sigil of item, node
+            calling new_nodes.put with key, node
+        else:
+            var node2 as dom.Element is calling st->render_fn with sigil of item
+            var ar as result of bool to js.JsError is calling dom.append with st->container, node2
+            if not ar.is_ok:
+                calling panic with "tela: each append failed"
+            calling new_nodes.put with key, node2
+    for k in st->keys:
+        if not calling new_nodes.contains with k:
+            var old as dom.Element is calling st->nodes.get with k
+            var rr as result of bool to js.JsError is calling dom.remove with old
+            calling dom.free with (sigil of old)
+    for k in new_keys:
+        var node3 as dom.Element is calling new_nodes.get with k
+        var ar2 as result of bool to js.JsError is calling dom.append with st->container, node3
+        if not ar2.is_ok:
+            calling panic with "tela: each reorder failed"
+    set st->keys is new_keys
+    set st->nodes is new_nodes
+
+weave free_each shard T with ctx as ref to void into void:
+    var st as ref to EachState of T is transmute ctx to ref to EachState of T
+    for k in st->keys:
+        var node as dom.Element is calling st->nodes.get with k
+        var rr as result of bool to js.JsError is calling dom.remove with node
+        calling dom.free with (sigil of node)
+    banish st
+
+weave ensure_each shard T with st as ref to EachState of T into void:
+    return
+
+## Renderiza una lista keyed. `update_fn` recibe el item y el nodo existente.
+weave each shard T with key_fn as (weave with item as ref to T into string), render_fn as (weave with item as ref to T into Elem), update_fn as (weave with item as ref to T, node as Elem into void), container as dom.Element, source as Signal of list of T into Subscription:
+    var st as ref to EachState of T is calling memoria.alloc of EachState of T
+    calling ensure_each of T with st
+    set st->container is container
+    set st->source is source.cell
+    set st->key_fn is key_fn
+    set st->render_fn is render_fn
+    set st->update_fn is update_fn
+    set st->keys is list of string
+    set st->nodes is map of string to dom.Element
+    set st->items is list of T
+    var ef as Effect is calling effect with (each_run of T), transmute st to ref to void
+    return calling make_sub with ef.id, (free_each of T), transmute st to ref to void
+
+# --------------------------------------------------------------------- when
+
+rune WhenState:
+    container as dom.Element
+    cond as ref to Cell of bool
+    then_fn as weave with dummy as int into Elem
+    else_fn as weave with dummy as int into Elem
+    current as maybe dom.Element
+    has_current as bool
+    current_value as bool
+
+weave when_run with ctx as ref to void into void:
+    var st as ref to WhenState is transmute ctx to ref to WhenState
+    var r as ref to Runtime is calling rt
+    if r->current != 0:
+        var already as bool is false
+        for s in st->cond->subs:
+            if s == r->current:
+                set already is true
+        if not already:
+            calling st->cond->subs.push with r->current
+    var v as bool is st->cond->value
+    if st->has_current and v == st->current_value:
+        return
+    if st->has_current:
+        if st->current is present:
+            var old as dom.Element is st->current.value
+            var rr as result of bool to js.JsError is calling dom.remove with old
+            calling dom.free with (sigil of old)
+    var node as dom.Element is calling st->then_fn with 0
+    if not v:
+        set node is calling st->else_fn with 0
+    var ar as result of bool to js.JsError is calling dom.append with st->container, node
+    if not ar.is_ok:
+        calling panic with "tela: when append failed"
+    set st->current is some node
+    set st->has_current is true
+    set st->current_value is v
+
+weave free_when with ctx as ref to void into void:
+    var st as ref to WhenState is transmute ctx to ref to WhenState
+    if st->has_current and st->current is present:
+        var old as dom.Element is st->current.value
+        var rr as result of bool to js.JsError is calling dom.remove with old
+        calling dom.free with (sigil of old)
+    banish st
+
+## Condicional estructural. `then_fn`/`else_fn` no capturan; usan señales propias.
+weave conditional with then_fn as (weave with dummy as int into Elem), else_fn as (weave with dummy as int into Elem), container as dom.Element, cond as Signal of bool into Subscription:
+    var st as ref to WhenState is calling memoria.alloc of WhenState
+    set st->container is container
+    set st->cond is cond.cell
+    set st->then_fn is then_fn
+    set st->else_fn is else_fn
+    set st->current is maybe none
+    set st->has_current is false
+    set st->current_value is false
+    var ef as Effect is calling effect with when_run, transmute st to ref to void
+    return calling make_sub with ef.id, free_when, transmute st to ref to void

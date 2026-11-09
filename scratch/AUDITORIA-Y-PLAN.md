@@ -1336,3 +1336,49 @@ Sin push; el usuario hace `git push`.
 ---
 
 **Fin de la auditoría.** Si apruebas, empiezo por la Fase 1 (compilador) y no toco `tela` hasta que el compilador esté en verde.
+
+---
+
+## 14. Estado de implementación (0.1.0 / psc 0.55.0)
+
+Implementado y validado:
+
+- `tela` 0.1.0: señales, `derived1`, efectos, `batch`, registro tipado
+  (string/int/float/bool), bindings declarativos y programáticos, `mount`,
+  `unmount`, `each` keyed, `conditional`, delegación de eventos.
+- Compilador 0.55.0: C1 (`TkFn`), C2 (especializaciones tardías), C5 (`void`
+  como argumento genérico rechazado), C6 (`attribute_names`, `insert_before`),
+  plantillas C genéricas omitidas y `std.web.event.kind` corregido.
+- Ejemplos: contador, TodoMVC (add/toggle/filtros/clear/left) y tarjetas con
+  `each` + `conditional`, todos compilando a wasm y verificados en Chromium
+  headless.
+- Tests: `tests/core` (3 tests nativos), `tests/regress_fn_only_rune.sh`,
+  `tests/regress_void_generic_arg.sh`.
+- Documentación en `docs/en/` y `docs/es/`, README bilingüe, LICENSE MIT.
+
+Limitaciones conocidas:
+
+- C3: interpolar una llamada a método genérico sigue produciendo cadena vacía;
+  `tela` asigna primero a una variable local. Documentado en el CHANGELOG del
+  compilador.
+- C4: métodos de concepto genéricos (`PlainRow<T>`) siguen fallando; `tela`
+  usa runes concretas (`CardRow`, `TodoRow`) para evitar el bug.
+- `Signal.set` sobre un campo genérico puede especializarse a `void*`; los
+  ejemplos usan `tela.set_int`/`tela.set_bool` en handlers.
+- `data-tela-if` y `data-tela-each` declarativos quedan para 0.2.
+
+Comandos de verificación usados:
+
+```sh
+# compilador
+cd /home/tugatito/Documentos/GitHub/PenguScript
+./tools/build.sh --no-wasm --no-bind --jobs 8
+build/psc version                      # psc 0.55.0 (F13)
+./tests/regress_fn_only_rune.sh
+./tests/regress_void_generic_arg.sh
+
+# tela
+cd /home/tugatito/Documentos/GitHub/tela/tests/core && psc test
+cd examples/counter && PENGU_WASM_SHELL=$PWD/shell.html psc build --target wasm
+# idem todomvc y cards; servir build/ y abrir en Chromium
+```

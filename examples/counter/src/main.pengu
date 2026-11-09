@@ -1,0 +1,45 @@
+import tela
+import std.web.event as event
+
+rune App:
+    count as tela.Signal of int
+    zero as tela.Signal of bool
+
+weave app into ref to App:
+    static var a as App is with count is (calling tela.signal with 0), zero is (calling tela.signal with true)
+    return sigil of a
+
+weave refresh_zero into void:
+    var a as ref to App is calling app
+    var c as tela.Signal of int is a->count
+    var z as tela.Signal of bool is a->zero
+    var n as int is calling c.get
+    calling tela.set_bool with z, n == 0
+
+weave on_inc with ev as event.Event into void:
+    var a as ref to App is calling app
+    var c as tela.Signal of int is a->count
+    calling tela.set_int with c, (calling c.get) + 1
+    calling refresh_zero
+
+weave on_dec with ev as event.Event into void:
+    var a as ref to App is calling app
+    var c as tela.Signal of int is a->count
+    calling tela.set_int with c, (calling c.get) - 1
+    calling refresh_zero
+
+weave on_reset with ev as event.Event into void:
+    var a as ref to App is calling app
+    var c as tela.Signal of int is a->count
+    calling tela.set_int with c, 0
+    calling refresh_zero
+
+weave main into int:
+    var a as ref to App is calling app
+    calling tela.register_int with "count", a->count
+    calling tela.register_bool with "is_zero", a->zero
+    calling tela.register_handler with "inc", on_inc
+    calling tela.register_handler with "dec", on_dec
+    calling tela.register_handler with "reset", on_reset
+    calling tela.mount with "#app"
+    return 0

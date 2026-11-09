@@ -1,0 +1,236 @@
+import tela
+import std.spark as spark
+import std.scrolls as scrolls
+import std.web.dom as dom
+import std.web.event as event
+
+rune Todo:
+    id as int
+    title as string
+    done as bool
+
+rune App:
+    todos as tela.Signal of list of Todo
+    visible as tela.Signal of list of Todo
+    filter as string
+    next_id as int
+    left as tela.Signal of string
+    empty as tela.Signal of bool
+    has_done as tela.Signal of bool
+    all_sel as tela.Signal of bool
+    active_sel as tela.Signal of bool
+    done_sel as tela.Signal of bool
+
+weave app into ref to App:
+    static var a as App is with todos is (calling tela.signal with (list of Todo)), visible is (calling tela.signal with (list of Todo)), filter is "all", next_id is 1, left is (calling tela.signal with "0 left"), empty is (calling tela.signal with true), has_done is (calling tela.signal with false), all_sel is (calling tela.signal with true), active_sel is (calling tela.signal with false), done_sel is (calling tela.signal with false)
+    return sigil of a
+
+weave make_el with tag as string into dom.Element:
+    var r as result of dom.Element to js.JsError is calling dom.create with tag
+    if not r.is_ok:
+        calling tela.panic with "todomvc: cannot create " + tag
+    return r.value
+
+weave sync into void:
+    var a as ref to App is calling app
+    var items as list of Todo is calling a->todos.get
+    var vis as list of Todo is list of Todo
+    var left as int is 0
+    var done_count as int is 0
+    for t in items:
+        if not t.done:
+            set left is left + 1
+        else:
+            set done_count is done_count + 1
+        if a->filter == "all":
+            calling vis.push with t
+        if a->filter == "active" and not t.done:
+            calling vis.push with t
+        if a->filter == "done" and t.done:
+            calling vis.push with t
+    calling a->visible.set with vis
+    var ls as tela.Signal of string is a->left
+    var ltxt as string is (calling spark.str_int with left) + " left"
+    calling ls.set with ltxt
+    calling a->empty.set with vis.len == 0
+    calling a->has_done.set with done_count > 0
+    calling a->all_sel.set with a->filter == "all"
+    calling a->active_sel.set with a->filter == "active"
+    calling a->done_sel.set with a->filter == "done"
+
+weave add_todo into void:
+    var a as ref to App is calling app
+    var ir as result of dom.Element to js.JsError is calling dom.query_required with "#new-todo"
+    if not ir.is_ok:
+        return
+    var vr as result of maybe string to js.JsError is calling dom.value with ir.value
+    if not vr.is_ok or vr.value is not present:
+        return
+    var title as string is calling scrolls.trim with vr.value.value
+    if title.len == 0:
+        return
+    var items as list of Todo is calling a->todos.get
+    calling items.push with (with id is a->next_id, title is title, done is false)
+    set a->next_id is a->next_id + 1
+    calling a->todos.set with items
+    calling dom.set_value with ir.value, ""
+    calling sync
+
+weave on_add_key with ev as event.Event into void:
+    var kr as result of maybe string to js.JsError is calling event.key with ev
+    if not kr.is_ok or kr.value is not present:
+        return
+    if kr.value.value == "Enter":
+        calling add_todo
+
+weave on_add_click with ev as event.Event into void:
+    calling add_todo
+
+weave event_el with ev as event.Event into maybe dom.Element:
+    var tr as result of js.JsValue to js.JsError is calling event.target with ev
+    if not tr.is_ok:
+        return maybe none
+    var er as result of dom.Element to js.JsError is calling dom.wrap with tr.value
+    if not er.is_ok:
+        return maybe none
+    return some er.value
+
+weave event_id with el as dom.Element into maybe int:
+    var ar as result of maybe string to js.JsError is calling dom.get_attr with el, "data-id"
+    if not ar.is_ok or ar.value is not present:
+        return maybe none
+    return calling spark.parse_int with ar.value.value
+
+weave on_toggle with ev as event.Event into void:
+    var eo as maybe dom.Element is calling event_el with ev
+    if eo is not present:
+        return
+    var io as maybe int is calling event_id with eo.value
+    if io is not present:
+        return
+    var a as ref to App is calling app
+    var items as list of Todo is calling a->todos.get
+    var next as list of Todo is list of Todo
+    for t in items:
+        if t.id == io.value:
+            calling next.push with (with id is t.id, title is t.title, done is not t.done)
+        else:
+            calling next.push with t
+    calling a->todos.set with next
+    calling sync
+
+weave on_remove with ev as event.Event into void:
+    var eo as maybe dom.Element is calling event_el with ev
+    if eo is not present:
+        return
+    var io as maybe int is calling event_id with eo.value
+    if io is not present:
+        return
+    var a as ref to App is calling app
+    var items as list of Todo is calling a->todos.get
+    var next as list of Todo is list of Todo
+    for t in items:
+        if t.id != io.value:
+            calling next.push with t
+    calling a->todos.set with next
+    calling sync
+
+weave on_toggle_all with ev as event.Event into void:
+    var eo as maybe dom.Element is calling event_el with ev
+    if eo is not present:
+        return
+    var want as bool is calling dom.checked with eo.value
+    var a as ref to App is calling app
+    var items as list of Todo is calling a->todos.get
+    var next as list of Todo is list of Todo
+    for t in items:
+        calling next.push with (with id is t.id, title is t.title, done is want)
+    calling a->todos.set with next
+    calling sync
+
+weave set_all with ev as event.Event into void:
+    var a as ref to App is calling app
+    set a->filter is "all"
+    calling sync
+
+weave set_active with ev as event.Event into void:
+    var a as ref to App is calling app
+    set a->filter is "active"
+    calling sync
+
+weave set_done with ev as event.Event into void:
+    var a as ref to App is calling app
+    set a->filter is "done"
+    calling sync
+
+weave clear_done with ev as event.Event into void:
+    var a as ref to App is calling app
+    var items as list of Todo is calling a->todos.get
+    var next as list of Todo is list of Todo
+    for t in items:
+        if not t.done:
+            calling next.push with t
+    calling a->todos.set with next
+    calling sync
+
+weave render_todo with t as ref to Todo into dom.Element:
+    var li as dom.Element is calling make_el with "li"
+    var cid as string is "todo-" + (calling spark.str_int with t->id)
+    calling dom.set_attr with li, "id", cid
+    if t->done:
+        calling dom.add_class with li, "done"
+    var check as dom.Element is calling make_el with "input"
+    calling dom.set_attr with check, "type", "checkbox"
+    calling dom.set_attr with check, "id", cid + "-check"
+    calling dom.set_attr with check, "data-id", calling spark.str_int with t->id
+    calling dom.set_checked with check, t->done
+    var cr as result of dom.Listener to js.JsError is calling dom.on with check, "change", on_toggle
+    calling dom.append with li, check
+    var label as dom.Element is calling make_el with "span"
+    calling dom.set_attr with label, "id", cid + "-label"
+    calling dom.set_text with label, t->title
+    calling dom.append with li, label
+    var del as dom.Element is calling make_el with "button"
+    calling dom.set_attr with del, "data-id", calling spark.str_int with t->id
+    calling dom.set_text with del, "x"
+    var dr as result of dom.Listener to js.JsError is calling dom.on with del, "click", on_remove
+    calling dom.append with li, del
+    return li
+
+weave update_todo with t as ref to Todo, node as dom.Element into void:
+    var cid as string is "todo-" + (calling spark.str_int with t->id)
+    var lr as result of dom.Element to js.JsError is calling dom.query_required with "#" + cid + "-label"
+    if lr.is_ok:
+        calling dom.set_text with lr.value, t->title
+    var cr as result of dom.Element to js.JsError is calling dom.query_required with "#" + cid + "-check"
+    if cr.is_ok:
+        calling dom.set_checked with cr.value, t->done
+    if t->done:
+        calling dom.add_class with node, "done"
+    else:
+        calling dom.remove_class with node, "done"
+
+weave todo_key with t as ref to Todo into string:
+    return calling spark.str_int with t->id
+
+weave main into int:
+    var a as ref to App is calling app
+    calling tela.register_text with "left", a->left
+    calling tela.register_bool with "empty", a->empty
+    calling tela.register_bool with "has_done", a->has_done
+    calling tela.register_bool with "all_sel", a->all_sel
+    calling tela.register_bool with "active_sel", a->active_sel
+    calling tela.register_bool with "done_sel", a->done_sel
+    calling tela.register_handler with "add_key", on_add_key
+    calling tela.register_handler with "add_click", on_add_click
+    calling tela.register_handler with "toggle_all", on_toggle_all
+    calling tela.register_handler with "all", set_all
+    calling tela.register_handler with "active", set_active
+    calling tela.register_handler with "done", set_done
+    calling tela.register_handler with "clear", clear_done
+    calling tela.mount with "#app"
+    var ir as result of dom.Element to js.JsError is calling dom.query_required with "#todo-list"
+    if ir.is_ok:
+        calling tela.each of Todo with todo_key, render_todo, update_todo, ir.value, a->visible
+    calling sync
+    return 0

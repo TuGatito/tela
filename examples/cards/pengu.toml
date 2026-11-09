@@ -1,0 +1,11 @@
+[project]
+name = "tela-cards-example"
+version = "0.1.0"
+entry = "src/main.pengu"
+output = "exe"
+
+[build]
+src_dir = "src"
+
+[dependencies.tela]
+path = "../.."

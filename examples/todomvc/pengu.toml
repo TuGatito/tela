@@ -1,0 +1,12 @@
+[project]
+name = "todomvc"
+version = "0.1.0"
+entry = "src/main.pengu"
+output = "exe"
+output_name = "todomvc"
+
+[build]
+src_dir = "src"
+
+[dependencies.tela]
+path = "../.."

@@ -1,0 +1,36 @@
+[project]
+name = "tela"
+version = "0.1.0"
+entry = "pengu/tela.pengu"
+output = "static"
+output_name = "tela"
+
+[build]
+src_dir = "pengu"
+lib_dir = "lib"
+include_dir = "include"
+c_dir = "c"
+build_dir = "build"
+includes = []
+links = []
+lib_dirs = []
+include_dirs = []
+cflags = ["-Wall", "-std=c11"]
+ldflags = []
+defines = []
+cc = "gcc"
+
+
+[dependencies]
+
+[profiles.debug]
+cflags = ["-g", "-O0", "-Wall"]
+defines = ["DEBUG"]
+
+[profiles.release]
+cflags = ["-O3", "-DNDEBUG", "-ffunction-sections", "-fdata-sections"]
+defines = ["NDEBUG"]
+
+[profiles.small]
+cflags = ["-Os", "-DNDEBUG", "-ffunction-sections", "-fdata-sections"]
+defines = ["NDEBUG", "PENGU_SIZE_OPT"]

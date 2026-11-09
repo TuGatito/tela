@@ -1,0 +1,53 @@
+import tela
+import std.ward as ward
+
+rune Tick:
+    sig as tela.Signal of int
+    hits as int
+
+weave tick into ref to Tick:
+    static var t as Tick is with sig is (calling tela.signal with 0), hits is 0
+    return sigil of t
+
+weave on_tick with ctx as ref to void into void:
+    var t as ref to Tick is calling tick
+    var v as int is calling t->sig.get
+    set t->hits is t->hits + v + 1
+
+weave batch_work into void:
+    calling on_tick with (transmute 0 to ref to void)
+
+weave double with n as int into int:
+    return n * 2
+
+weave main into int:
+    return 0
+
+test "signal set and get":
+    var s as tela.Signal of int is calling tela.signal with 1
+    calling ward.assert_eq_int with (calling s.get), 1
+    calling s.set with 7
+    calling ward.assert_eq_int with (calling s.get), 7
+    calling s.dispose
+
+test "derived recomputes":
+    var s as tela.Signal of int is calling tela.signal with 3
+    var d as tela.Derived of int, int is calling tela.derived1 with double, s
+    calling ward.assert_eq_int with (calling d.get), 6
+    calling s.set with 10
+    calling ward.assert_eq_int with (calling d.get), 20
+    calling d.dispose
+    calling s.dispose
+
+test "effect runs and batches":
+    var t as ref to Tick is calling tick
+    var e as tela.Effect is calling tela.effect with on_tick, (transmute 0 to ref to void)
+    calling ward.assert_eq_int with t->hits, 1
+    calling t->sig.set with 2
+    calling tela.flush_now
+    calling ward.assert_eq_int with t->hits, 4
+    calling tela.batch with batch_work
+    calling t->sig.set with 5
+    calling tela.flush_now
+    calling ward.assert_eq_int with t->hits, 13
+    calling tela.dispose_effect with e
