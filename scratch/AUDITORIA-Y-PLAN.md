@@ -1339,30 +1339,28 @@ Sin push; el usuario hace `git push`.
 
 ---
 
-## 14. Estado de implementación (0.1.0 / psc 0.55.0)
+## 14. Estado de implementación (0.1.0 / psc 0.55.1)
 
 Implementado y validado:
 
 - `tela` 0.1.0: señales, `derived1`, efectos, `batch`, registro tipado
   (string/int/float/bool), bindings declarativos y programáticos, `mount`,
   `unmount`, `each` keyed, `conditional`, delegación de eventos.
-- Compilador 0.55.0: C1 (`TkFn`), C2 (especializaciones tardías), C5 (`void`
-  como argumento genérico rechazado), C6 (`attribute_names`, `insert_before`),
-  plantillas C genéricas omitidas y `std.web.event.kind` corregido.
+- Compilador 0.55.1: C1 (`TkFn`), C3 (interpolación de métodos genéricos),
+  C4 (métodos de concepto con receptor concreto), C5 (`void` como argumento
+  genérico rechazado), C6 (`attribute_names`, `insert_before`), plantillas C
+  válidas (`Rc<T>`/`WeakRc<T>`/`OrderedMap<T>`) y `std.web.event.kind`.
 - Ejemplos: contador, TodoMVC (add/toggle/filtros/clear/left) y tarjetas con
-  `each` + `conditional`, todos compilando a wasm y verificados en Chromium
-  headless.
-- Tests: `tests/core` (3 tests nativos), `tests/regress_fn_only_rune.sh`,
+  `each` + `conditional`, compilando a wasm y verificados en Chromium headless.
+- Tests: `tests/core` (3 tests nativos), `tests/regress_generic_method_interp.sh`,
+  `tests/regress_generic_concept_method.sh`, `tests/regress_fn_only_rune.sh`,
   `tests/regress_void_generic_arg.sh`.
 - Documentación en `docs/en/` y `docs/es/`, README bilingüe, LICENSE MIT.
 
 Limitaciones conocidas:
 
-- C3: interpolar una llamada a método genérico sigue produciendo cadena vacía;
-  `tela` asigna primero a una variable local. Documentado en el CHANGELOG del
-  compilador.
-- C4: métodos de concepto genéricos (`PlainRow<T>`) siguen fallando; `tela`
-  usa runes concretas (`CardRow`, `TodoRow`) para evitar el bug.
+- C2 sigue parcial: las especializaciones que solo aparecen en bloques `test`
+  todavía se emiten en builds normales (aumentan el tamaño, no rompen C).
 - `Signal.set` sobre un campo genérico puede especializarse a `void*`; los
   ejemplos usan `tela.set_int`/`tela.set_bool` en handlers.
 - `data-tela-if` y `data-tela-each` declarativos quedan para 0.2.
@@ -1373,12 +1371,17 @@ Comandos de verificación usados:
 # compilador
 cd /home/tugatito/Documentos/GitHub/PenguScript
 ./tools/build.sh --no-wasm --no-bind --jobs 8
-build/psc version                      # psc 0.55.0 (F13)
+build/psc version                      # psc 0.55.1 (F13)
+./tests/regress_generic_method_interp.sh
+./tests/regress_generic_concept_method.sh
 ./tests/regress_fn_only_rune.sh
 ./tests/regress_void_generic_arg.sh
+./tests/run.sh
 
 # tela
-cd /home/tugatito/Documentos/GitHub/tela/tests/core && psc test
-cd examples/counter && PENGU_WASM_SHELL=$PWD/shell.html psc build --target wasm
-# idem todomvc y cards; servir build/ y abrir en Chromium
+cd /home/tugatito/Documentos/GitHub/tela
+(cd tests/core && psc test)             # All 3 test(s) passed
+(cd examples/counter && psc build)
+(cd examples/todomvc && psc build)
+(cd examples/cards && psc build)
 ```
