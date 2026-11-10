@@ -10,6 +10,8 @@
 - Event delegation with `closest` for `click`, `keydown`, `submit`, `input`
   and `change`.
 - `Scope`, `scope_add`, `on_cleanup`, `scope_dispose`.
+- `Resource<T>` async state holder with `begin`/`finish`/`fail` tokens and
+  explicit `dispose_resource`.
 - Typed two-way inputs: `data-tela-value-int`, `data-tela-value-float`.
 - History API helpers in `std.web.router` (`navigate_history`,
   `on_history_change`, `off_history`).

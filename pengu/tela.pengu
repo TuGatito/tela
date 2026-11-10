@@ -1564,3 +1564,47 @@ weave scope_dispose with sc as Scope into void:
     calling b->subs.clear
     calling r->scopes.remove with sc.id
     banish b
+
+## Async state holder: `data`, `loading`, `error` plus a version token.
+##
+## `resource` does not perform I/O. Call `begin` before a request, then
+## `finish`/`fail` with the returned token from the callback. A stale response
+## (different token) is ignored.
+rune Resource shard T:
+    data as Signal of maybe T
+    loading as Signal of bool
+    error as Signal of maybe string
+    version as u64
+
+weave resource shard T with initial as maybe T into Resource of T:
+    var d as Signal of maybe T is calling signal with initial
+    var l as Signal of bool is calling signal with false
+    var en as maybe string is (maybe none)
+    var e as Signal of maybe string is calling signal with en
+    return with data is d, loading is l, error is e, version is 0
+
+## Starts a load and returns its token. Marks loading and clears the error.
+weave begin shard T with r as ref to Resource of T into u64:
+    set r->version is r->version + 1
+    calling r->loading.set with true
+    var en as maybe string is (maybe none)
+    calling r->error.set with en
+    return r->version
+
+## Applies a successful response only if `token` is still current.
+weave finish shard T with r as (ref to Resource of T), token as u64, value as T into void:
+    if token == r->version:
+        calling r->data.set with (some value)
+        calling r->loading.set with false
+
+## Applies an error only if `token` is still current.
+weave fail shard T with r as (ref to Resource of T), token as u64, message as string into void:
+    if token == r->version:
+        calling r->error.set with (some message)
+        calling r->loading.set with false
+
+weave dispose_resource shard T with r as (ref to Resource of T) into void:
+    calling r->data.dispose
+    calling r->loading.dispose
+    calling r->error.dispose
+    banish r

@@ -46,7 +46,7 @@ Sin el 0.56.0, `tela` puede simular `closest`/fragmentos con `dom.raw` y JS, per
 
 ### 2.2 Estado de validación
 
-- `tests/core`: 4 tests nativos.
+- `tests/core`: 5 tests nativos.
 - Ejemplos: counter, TodoMVC core y cards; compilan a wasm y se probaron con Chromium headless.
 - No hay suite de navegador automatizada en el repo; las pruebas de DOM fueron manuales/asistidas.
 - El compilador tiene suite nativa de 168 archivos, pero **no cubre DOM real**.

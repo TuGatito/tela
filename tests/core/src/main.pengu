@@ -71,3 +71,17 @@ test "scope cleanup":
     calling ward.assert_eq_int with c->n, 0
     calling tela.scope_dispose with sc
     calling ward.assert_eq_int with c->n, 1
+
+test "resource ignores stale responses":
+    var n as maybe int is (maybe none)
+    var r as tela.Resource of int is calling tela.resource with n
+    var t1 as u64 is calling tela.begin of int with (sigil of r)
+    var t2 as u64 is calling tela.begin of int with (sigil of r)
+    calling tela.finish of int with (sigil of r), t1, 10
+    calling ward.assert_eq_bool with (calling r.loading.get), true
+    calling tela.finish of int with (sigil of r), t2, 20
+    calling ward.assert_eq_bool with (calling r.loading.get), false
+    var d as maybe int is calling r.data.get
+    if d is present:
+        calling ward.assert_eq_int with d.value, 20
+    calling tela.dispose_resource of int with (sigil of r)

@@ -193,8 +193,29 @@ calling router.on_history_change with on_route
 calling router.off_history with listener
 ```
 
-`navigate_history` calls `pushState`/`replaceState` and does not emit
-`popstate`; render after the call. The listener must be disposed explicitly.
+Hash routing uses `navigate`/`on_change`; History routing uses
+`navigate_history`/`on_history_change`. `navigate_history` calls
+`pushState`/`replaceState` and does not emit `popstate`; render after the call.
+The listener must be disposed explicitly.
+
+## Async resources
+
+`tela.resource` is a small state holder, not an I/O runtime. It carries
+`data: Signal<maybe T>`, `loading: Signal<bool>`, `error: Signal<maybe string>`
+and a version token. Start a request with `begin`, then call `finish`/`fail`
+from the callback with the returned token; stale responses are ignored.
+
+```pengu
+var r as tela.Resource of string is calling tela.resource with (maybe none of string)
+var token as u64 is calling tela.begin of string with (sigil of r)
+calling tela.finish of string with (sigil of r), token, "loaded"
+calling tela.fail of string with (sigil of r), token, "boom"
+calling tela.dispose_resource of string with (sigil of r)
+```
+
+Use `std.web.http.get` (or `std.web.js.fetch`) inside a top-level callback and
+keep the token in your app state. `resource` does not own the request and does
+not cancel the network call; it only discards late completions.
 
 ## Lifecycle
 
@@ -210,7 +231,7 @@ binds attributes, installs delegated listeners and stores node handles.
 - `Signal` values should be copyable (primitives, strings, lists, runes
   without `Drop`).
 - `data-tela-each` uses a binder; there is no field-name registry.
-- Async resources are not built in; use `std.web.js.fetch` with explicit
-  callbacks and a `Scope` cleanup.
+- `resource` only holds `data/loading/error` and a version token; it does not
+  own or cancel the request. Pair it with `std.web.http` and a `Scope`.
 - Generic method calls inside string interpolation are a compiler limitation;
   assign to a local first.

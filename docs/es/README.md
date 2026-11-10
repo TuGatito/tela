@@ -185,8 +185,29 @@ calling router.on_history_change with on_route
 calling router.off_history with listener
 ```
 
-`navigate_history` llama a `pushState`/`replaceState` y no emite `popstate`;
-renderiza después. El listener se libera explícitamente.
+El routing por hash usa `navigate`/`on_change`; el de History usa
+`navigate_history`/`on_history_change`. `navigate_history` llama a
+`pushState`/`replaceState` y no emite `popstate`; renderiza después. El listener se libera explícitamente.
+
+## Recursos async
+
+`tela.resource` es un contenedor de estado, no un runtime de I/O: expone
+`data: Signal<maybe T>`, `loading: Signal<bool>`, `error: Signal<maybe string>`
+y un token de versión. Inicia una petición con `begin` y llama a
+`finish`/`fail` desde el callback con ese token; las respuestas viejas se
+ignoran.
+
+```pengu
+var r as tela.Resource of string is calling tela.resource with (maybe none of string)
+var token as u64 is calling tela.begin of string with (sigil of r)
+calling tela.finish of string with (sigil of r), token, "loaded"
+calling tela.fail of string with (sigil of r), token, "boom"
+calling tela.dispose_resource of string with (sigil of r)
+```
+
+Usa `std.web.http.get` (o `std.web.js.fetch`) desde un callback de nivel
+superior y guarda el token en el estado de la app. `resource` no posee la
+petición ni cancela la red; solo descarta respuestas tardías.
 
 ## Ciclo de vida
 
@@ -202,7 +223,7 @@ libera señales registradas, scopes y binders `each`.
 - Los valores de `Signal` deben ser copiables (primitivos, strings, listas,
   runes sin `Drop`).
 - `data-tela-each` usa binder; no hay registry de nombres de campo.
-- No hay recursos async integrados; usa `std.web.js.fetch` con callbacks
-  explícitos y limpieza con `Scope`.
+- `resource` solo guarda `data/loading/error` y un token; no posee ni cancela
+  la petición. Combínalo con `std.web.http` y un `Scope`.
 - La interpolación de métodos genéricos es una limitación del compilador:
   asigna a una variable local primero.

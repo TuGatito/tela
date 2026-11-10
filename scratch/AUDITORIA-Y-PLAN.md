@@ -1354,7 +1354,7 @@ Implementado y validado:
   válidas (`Rc<T>`/`WeakRc<T>`/`OrderedMap<T>`) y `std.web.event.kind`.
 - Ejemplos: contador, TodoMVC (add/toggle/filtros/clear/left) y tarjetas con
   `each` + `conditional`, compilando a wasm y verificados en Chromium headless.
-- Tests: `tests/core` (4 tests nativos), `tests/regress_generic_method_interp.sh`,
+- Tests: `tests/core` (5 tests nativos), `tests/regress_generic_method_interp.sh`,
   `tests/regress_generic_concept_method.sh`, `tests/regress_fn_only_rune.sh`,
   `tests/regress_void_generic_arg.sh`.
 - Documentación en `docs/en/` y `docs/es/`, README bilingüe, LICENSE MIT.
@@ -1382,7 +1382,7 @@ build/psc version                      # psc 0.55.1 (F13)
 
 # tela
 cd /home/tugatito/Documentos/GitHub/tela
-(cd tests/core && psc test)             # All 4 test(s) passed
+(cd tests/core && psc test)             # All 5 test(s) passed
 (cd examples/counter && psc build)
 (cd examples/todomvc && psc build)
 (cd examples/cards && psc build)
@@ -1416,6 +1416,6 @@ cd /home/tugatito/Documentos/GitHub/PenguScript
 build/psc version                      # psc 0.56.0 (F13)
 ./tests/run.sh                         # OK 168
 cd /home/tugatito/Documentos/GitHub/tela
-(cd tests/core && psc test)             # 4 tests
+(cd tests/core && psc test)             # 5 tests
 tests/browser/run-board.sh              # OK tela browser
 ```
