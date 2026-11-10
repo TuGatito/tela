@@ -1,0 +1,11 @@
+[project]
+name = "tela-abort-example"
+version = "0.2.2"
+entry = "src/main.pengu"
+output = "exe"
+
+[build]
+src_dir = "src"
+
+[dependencies.tela]
+path = "../.."

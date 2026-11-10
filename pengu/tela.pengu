@@ -976,6 +976,8 @@ rune IfState:
     has_current as bool
     current as maybe dom.Element
     current_value as bool
+    visible as bool
+    rebuild as bool
     subs as list of Subscription
 
 weave if_track with st as ref to IfState into void:
@@ -991,42 +993,37 @@ weave if_track with st as ref to IfState into void:
         var o as ref to Observer is calling observer_at with r->current
         calling o->deps.push with (with remove is (remove_sub of bool), ctx is (transmute st->cond to ref to void))
 
-weave if_clear with st as ref to IfState into void:
+weave if_dispose with st as ref to IfState into void:
     for sub in st->subs:
         calling sub.dispose
     calling st->subs.clear
     if st->has_current and st->current is present:
         var old as dom.Element is st->current.value
-        var rr as result of bool to js.JsError is calling dom.remove with old
+        if st->visible:
+            var rr as result of bool to js.JsError is calling dom.remove with old
         calling dom.free with (sigil of old)
     set st->has_current is false
     set st->current is maybe none
+    set st->visible is false
 
-weave if_run with ctx as ref to void into void:
-    var st as ref to IfState is transmute ctx to ref to IfState
-    calling if_track with st
-    var v as bool is st->cond->value
-    if st->has_current and st->current_value == v:
-        return
-    calling if_clear with st
-    if not v:
-        set st->current_value is false
-        return
-    var cr as result of dom.Element to js.JsError is calling dom.clone with st->template
-    if not cr.is_ok:
-        calling panic with "tela: data-tela-if clone failed"
-    var node as dom.Element is cr.value
-    calling dom.remove_attr with node, "data-tela-if"
+weave if_insert with st as ref to IfState, node as dom.Element into void:
     var pr as result of maybe dom.Element to js.JsError is calling dom.parent with st->anchor
     if not pr.is_ok or pr.value is not present:
-        calling dom.free with (sigil of node)
         calling panic with "tela: data-tela-if has no parent"
     var par as dom.Element is pr.value.value
     var ir as result of bool to js.JsError is calling dom.insert_before with par, node, (some st->anchor)
     calling dom.free with (sigil of par)
     if not ir.is_ok:
-        calling dom.free with (sigil of node)
         calling panic with "tela: data-tela-if insert failed"
+
+weave if_build with st as ref to IfState into void:
+    var cr as result of dom.Element to js.JsError is calling dom.clone with st->template
+    if not cr.is_ok:
+        calling panic with "tela: data-tela-if clone failed"
+    var node as dom.Element is cr.value
+    calling dom.remove_attr with node, "data-tela-if"
+    calling dom.remove_attr with node, "data-tela-if-mode"
+    calling if_insert with st, node
     var r as ref to Runtime is calling rt
     var start as int is r->mount_subs.len
     calling apply_tree with node
@@ -1036,11 +1033,53 @@ weave if_run with ctx as ref to void into void:
         calling r->mount_subs.pop
     set st->current is some node
     set st->has_current is true
+    set st->visible is true
+
+weave if_show with st as ref to IfState into void:
+    if not st->has_current:
+        calling if_build with st
+        return
+    if st->visible:
+        return
+    if st->current is present:
+        calling if_insert with st, st->current.value
+        set st->visible is true
+
+weave if_hide with st as ref to IfState into void:
+    if not st->visible or not st->has_current:
+        return
+    if st->current is present:
+        var old as dom.Element is st->current.value
+        var rr as result of bool to js.JsError is calling dom.remove with old
+    set st->visible is false
+
+weave if_run with ctx as ref to void into void:
+    var st as ref to IfState is transmute ctx to ref to IfState
+    calling if_track with st
+    var v as bool is st->cond->value
+    if not st->has_current:
+        if not v:
+            set st->current_value is false
+            return
+        calling if_build with st
+        set st->current_value is true
+        return
+    if v == st->current_value:
+        return
+    if v:
+        if st->rebuild:
+            calling if_dispose with st
+        calling if_show with st
+    else:
+        if st->rebuild:
+            calling if_dispose with st
+        else:
+            calling if_hide with st
     set st->current_value is v
 
 weave free_if with ctx as ref to void into void:
     var st as ref to IfState is transmute ctx to ref to IfState
-    calling if_clear with st
+    calling if_dispose with st
     calling dom.free with (sigil of st->template)
     banish st
 
@@ -1068,6 +1107,12 @@ weave mount_if with node as dom.Element, name as string into void:
     set st->has_current is false
     set st->current is maybe none
     set st->current_value is false
+    set st->visible is false
+    var mr as result of maybe string to js.JsError is calling dom.get_attr with node, "data-tela-if-mode"
+    set st->rebuild is false
+    if mr.is_ok and mr.value is present:
+        if mr.value.value == "rebuild":
+            set st->rebuild is true
     set st->subs is list of Subscription
     var ef as Effect is calling effect with if_run, transmute st to ref to void
     calling mount_add with (calling make_sub with ef.id, free_if, transmute st to ref to void)
@@ -1117,6 +1162,8 @@ weave apply_attr with node as dom.Element, attr as string into void:
     if attr == "data-tela-if":
         var name as string is calling attr_value with node, attr
         calling mount_if with node, name
+        return
+    if attr == "data-tela-if-mode":
         return
     if attr == "data-tela-each":
         var name as string is calling attr_value with node, attr
@@ -1575,35 +1622,68 @@ rune Resource shard T:
     loading as Signal of bool
     error as Signal of maybe string
     version as u64
+    handle as maybe js.FetchHandle
 
 weave resource shard T with initial as maybe T into Resource of T:
     var d as Signal of maybe T is calling signal with initial
     var l as Signal of bool is calling signal with false
     var en as maybe string is (maybe none)
     var e as Signal of maybe string is calling signal with en
-    return with data is d, loading is l, error is e, version is 0
+    return with data is d, loading is l, error is e, version is 0, handle is (maybe none)
 
-## Starts a load and returns its token. Marks loading and clears the error.
+## Aborta el handle actual, si existe, y lo olvida.
+weave abort_handle with h as maybe js.FetchHandle into void:
+    if h is present:
+        var br as result of bool to js.JsError is calling js.abort_request with h.value
+        if br.is_ok:
+            var ignored as bool is br.value
+
+## Starts a load and returns its token. Aborta la petición anterior, marca
+## loading y limpia el error.
 weave begin shard T with r as ref to Resource of T into u64:
+    calling abort_handle with r->handle
+    set r->handle is maybe none
     set r->version is r->version + 1
     calling r->loading.set with true
     var en as maybe string is (maybe none)
     calling r->error.set with en
     return r->version
 
+## Asocia el handle de la petición en curso. Si había otro, lo aborta.
+weave attach_request shard T with r as (ref to Resource of T), h as js.FetchHandle into void:
+    calling abort_handle with r->handle
+    set r->handle is some h
+
+## Cancela la petición en curso sin marcarla como error.
+weave cancel shard T with r as ref to Resource of T into void:
+    calling abort_handle with r->handle
+    set r->handle is maybe none
+    set r->version is r->version + 1
+    calling r->loading.set with false
+    var en as maybe string is (maybe none)
+    calling r->error.set with en
+
 ## Applies a successful response only if `token` is still current.
-weave finish shard T with r as (ref to Resource of T), token as u64, value as T into void:
+weave finish shard T with r as (ref to Resource of T), token as u64, value as T into bool:
     if token == r->version:
+        set r->handle is maybe none
         calling r->data.set with (some value)
         calling r->loading.set with false
+        return true
+    return false
 
 ## Applies an error only if `token` is still current.
-weave fail shard T with r as (ref to Resource of T), token as u64, message as string into void:
+weave fail shard T with r as (ref to Resource of T), token as u64, message as string into bool:
     if token == r->version:
+        set r->handle is maybe none
         calling r->error.set with (some message)
         calling r->loading.set with false
+        return true
+    return false
 
 weave dispose_resource shard T with r as (ref to Resource of T) into void:
+    calling abort_handle with r->handle
+    set r->handle is maybe none
     calling r->data.dispose
     calling r->loading.dispose
     calling r->error.dispose

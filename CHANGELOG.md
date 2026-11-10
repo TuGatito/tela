@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.2.2] — 2026-11-09
+
+- `Resource<T>` now owns an abortable `js.FetchHandle`: `begin` aborts the
+  previous request, `attach_request` stores the handle, `cancel` aborts without
+  setting an error, and `dispose_resource` aborts before disposing.
+- `finish`/`fail` return `bool` (whether the token was current).
+- `std.web.http` exposes `get_abortable`/`request_abortable`/`abort`.
+- Browser regression `tests/browser/run-abort.sh` covers start, cancel and a
+  later successful request.
+- Requires `psc` 0.57.0 for the abortable bridge.
+
+## [0.2.1] — 2026-11-09
+
+- `data-tela-if` default `keep` preserves the detached node, its DOM state and
+  subscriptions; `data-tela-if-mode="rebuild"` keeps the old destroy/recreate
+  semantics.
+- Browser regression `tests/browser/run-if-state.sh` covers both modes.
+
 ## [0.2.0] — 2026-11-09
 
 - Runtime: dependency tracking per observer with cleanup, cycle guard, real

@@ -1,0 +1,13 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>tela if state</title></head>
+<body>
+<div id="app">
+  <button data-tela-on-click="toggle">toggle</button>
+  <span id="dbg" data-tela-show="show">shown</span>
+  <p data-tela-if="show"><input id="keep" value="keep"></p>
+  <p data-tela-if="show" data-tela-if-mode="rebuild"><input id="rebuild" value="keep"></p>
+</div>
+<script src="if-state.js"></script>
+</body>
+</html>

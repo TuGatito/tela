@@ -1,0 +1,62 @@
+import tela
+import std.web.event as event
+import std.web.http as http
+import std.web.js as js
+
+rune App:
+    res as tela.Resource of string
+    token as u64
+    status as tela.Signal of string
+
+weave app into ref to App:
+    static var a as App is with res is (calling tela.resource of string with (maybe none)), token is 0, status is (calling tela.signal with "idle")
+    return sigil of a
+
+weave set_status with text as string into void:
+    var a as ref to App is calling app
+    calling a->status.set with text
+
+weave on_ok with value as js.JsValue into void:
+    var a as ref to App is calling app
+    var rr as result of http.Response to js.JsError is calling http.response_from with value
+    if rr.is_ok:
+        var applied as bool is calling tela.finish of string with (sigil of a->res), a->token, rr.value.body
+        if applied:
+            calling set_status with "done"
+        calling http.free with (sigil of rr.value)
+    else:
+        calling set_status with "parse-error"
+
+weave on_err with value as js.JsValue into void:
+    var a as ref to App is calling app
+    var e as js.JsError is calling http.error_from with value
+    var applied as bool is calling tela.fail of string with (sigil of a->res), a->token, e.message
+    if applied:
+        calling set_status with "error"
+    banish e.name
+    banish e.message
+    banish e.stack
+
+weave on_start with ev as event.Event into void:
+    var a as ref to App is calling app
+    var t as u64 is calling tela.begin of string with (sigil of a->res)
+    set a->token is t
+    calling set_status with "loading"
+    var hr as result of http.RequestHandle to js.JsError is calling http.get_abortable with "/slow", on_ok, on_err
+    if hr.is_ok:
+        calling tela.attach_request of string with (sigil of a->res), hr.value
+    else:
+        calling set_status with "error"
+
+weave on_cancel with ev as event.Event into void:
+    var a as ref to App is calling app
+    calling tela.cancel of string with (sigil of a->res)
+    calling set_status with "idle"
+
+weave main into int:
+    var a as ref to App is calling app
+    calling tela.register_text with "status", a->status
+    calling tela.register_handler with "start", on_start
+    calling tela.register_handler with "cancel", on_cancel
+    calling tela.mount with "#app"
+    return 0

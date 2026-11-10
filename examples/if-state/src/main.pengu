@@ -1,0 +1,20 @@
+import tela
+import std.web.event as event
+
+rune App:
+    show as tela.Signal of bool
+
+weave app into ref to App:
+    static var a as App is with show is (calling tela.signal with true)
+    return sigil of a
+
+weave on_toggle with ev as event.Event into void:
+    var a as ref to App is calling app
+    calling tela.set_bool with a->show, not (calling a->show.get)
+
+weave main into int:
+    var a as ref to App is calling app
+    calling tela.register_bool with "show", a->show
+    calling tela.register_handler with "toggle", on_toggle
+    calling tela.mount with "#app"
+    return 0

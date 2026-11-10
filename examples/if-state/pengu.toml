@@ -1,0 +1,11 @@
+[project]
+name = "tela-if-state-example"
+version = "0.2.1"
+entry = "src/main.pengu"
+output = "exe"
+
+[build]
+src_dir = "src"
+
+[dependencies.tela]
+path = "../.."

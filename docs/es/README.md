@@ -1,4 +1,4 @@
-# tela — manual en español (0.2.0)
+# tela — manual en español (0.2.2)
 
 `tela` es una capa reactiva para PenguScript/WASM. Es deliberadamente pequeña:
 señales, valores derivados, efectos, bindings explícitos al DOM, listas con
@@ -115,9 +115,10 @@ registro presta la señal. Los nombres duplicados panic. Un `data-tela-*`
 desconocido panic al montar.
 
 `data-tela-if` clona la plantilla una vez y la sustituye por un comentario
-ancla. Mientras la condición es verdadera el clon permanece; al pasar a falsa se
-liberan el clon y sus suscripciones, y se vuelve a clonar en el siguiente true.
-`data-tela-each` reconstruye cada fila mediante un binder explícito, sin
+ancla. Por defecto (`keep`) el nodo se quita del DOM al pasar a false pero se
+conserva desconectado, con su estado y suscripciones; al volver a true se
+reinserta el mismo nodo. `data-tela-if-mode="rebuild"` lo libera y crea un clon
+nuevo. `data-tela-each` reconstruye cada fila mediante un binder explícito, sin
 reflexión de campos.
 
 ## Listas declarativas
@@ -193,21 +194,24 @@ El routing por hash usa `navigate`/`on_change`; el de History usa
 
 `tela.resource` es un contenedor de estado, no un runtime de I/O: expone
 `data: Signal<maybe T>`, `loading: Signal<bool>`, `error: Signal<maybe string>`
-y un token de versión. Inicia una petición con `begin` y llama a
-`finish`/`fail` desde el callback con ese token; las respuestas viejas se
-ignoran.
+y un token de versión. Inicia una petición con `begin`, asocia el handle con
+`attach_request` y llama a `finish`/`fail` desde el callback con ese token; las
+respuestas viejas se ignoran y ambos devuelven si aplicaron el cambio.
 
 ```pengu
 var r as tela.Resource of string is calling tela.resource with (maybe none of string)
 var token as u64 is calling tela.begin of string with (sigil of r)
-calling tela.finish of string with (sigil of r), token, "loaded"
-calling tela.fail of string with (sigil of r), token, "boom"
+var h as result of http.RequestHandle to js.JsError is calling http.get_abortable with "/api", on_ok, on_err
+if h.is_ok:
+    calling tela.attach_request of string with (sigil of r), h.value
+calling tela.cancel of string with (sigil of r)   # aborta y sube el token
 calling tela.dispose_resource of string with (sigil of r)
 ```
 
-Usa `std.web.http.get` (o `std.web.js.fetch`) desde un callback de nivel
-superior y guarda el token en el estado de la app. `resource` no posee la
-petición ni cancela la red; solo descarta respuestas tardías.
+`begin` aborta el handle anterior, `cancel` aborta el actual sin marcarlo como
+error y `dispose_resource` aborta antes de liberar las señales. Usa
+`http.get_abortable`/`http.request_abortable`; `resource` posee el handle, no
+el cuerpo de la respuesta.
 
 ## Ciclo de vida
 
@@ -216,14 +220,16 @@ conecta atributos, instala listeners delegados y guarda handles de nodos.
 `unmount()` libera suscripciones, listeners y handles; `shutdown()` además
 libera señales registradas, scopes y binders `each`.
 
-## Límites (0.2.0)
+## Límites (0.2.2)
 
 - Sin SSR, hidratación, CSS-in-JS ni DOM virtual.
 - Señales single-thread y solo en el hilo principal.
 - Los valores de `Signal` deben ser copiables (primitivos, strings, listas,
   runes sin `Drop`).
 - `data-tela-each` usa binder; no hay registry de nombres de campo.
-- `resource` solo guarda `data/loading/error` y un token; no posee ni cancela
-  la petición. Combínalo con `std.web.http` y un `Scope`.
+- `resource` posee el handle de aborto, pero no parsea ni libera la respuesta;
+  combínalo con los callbacks de `std.web.http` y un `Scope`.
+- `data-tela-if` en modo `keep` mantiene suscripciones mientras está oculto;
+  usa `data-tela-if-mode="rebuild"` si el estado oculto debe liberarse.
 - La interpolación de métodos genéricos es una limitación del compilador:
   asigna a una variable local primero.
