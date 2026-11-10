@@ -1,0 +1,11 @@
+[project]
+name = "tela-board-example"
+version = "0.2.0"
+entry = "src/main.pengu"
+output = "exe"
+
+[build]
+src_dir = "src"
+
+[dependencies.tela]
+path = "../.."

@@ -1,0 +1,98 @@
+import tela
+import std.memoria as memoria
+import std.spark as spark
+import std.web.dom as dom
+import std.web.event as event
+import std.web.js as js
+
+rune Task:
+    id as string
+    title as string
+    done as bool
+
+rune App:
+    tasks as tela.Signal of list of Task
+    empty as tela.Signal of bool
+    count as tela.Signal of int
+    next_id as int
+
+weave app into ref to App:
+    static var a as App is with tasks is (calling tela.signal with (list of Task)), empty is (calling tela.signal with true), count is (calling tela.signal with 0), next_id is 0
+    return sigil of a
+
+weave refresh into void:
+    var a as ref to App is calling app
+    var items as list of Task is calling a->tasks.get
+    calling a->count.set with items.len
+    calling a->empty.set with items.len == 0
+    banish items
+
+weave on_add with ev as event.Event into void:
+    var a as ref to App is calling app
+    var id as string is calling spark.str_int with a->next_id
+    var title as string is "{id}"
+    var t as Task is with id is id, title is title, done is false
+    var items as list of Task is calling a->tasks.get
+    calling items.push with t
+    calling a->tasks.set with items
+    set a->next_id is a->next_id + 1
+    calling refresh
+
+weave on_toggle with ev as event.Event into void:
+    var a as ref to App is calling app
+    var tr as result of js.JsValue to js.JsError is calling event.target with ev
+    if not tr.is_ok:
+        return
+    var er as result of dom.Element to js.JsError is calling dom.wrap with tr.value
+    if not er.is_ok:
+        return
+    defer calling dom.free with (sigil of er.value)
+    var br as result of maybe dom.Element to js.JsError is calling dom.closest with er.value, "[data-id]"
+    if not br.is_ok or br.value is not present:
+        return
+    var idr as result of maybe string to js.JsError is calling dom.get_attr with br.value.value, "data-id"
+    if not idr.is_ok or idr.value is not present:
+        return
+    var id as string is idr.value.value
+    var items as list of Task is calling a->tasks.get
+    var next as list of Task is list of Task
+    for t in items:
+        if t.id == id:
+            var u as Task is with id is t.id, title is t.title, done is not t.done
+            calling next.push with u
+        else:
+            calling next.push with t
+    calling a->tasks.set with next
+    calling refresh
+
+weave task_key with item as ref to Task into string:
+    return item->id
+
+weave bind_task with item as ref to Task, node as dom.Element into void:
+    var all as result of list of dom.Element to js.JsError is calling dom.query_all_under with node, "[data-field=title]"
+    if all.is_ok:
+        var hs as list of dom.Element is all.value
+        if hs.len > 0:
+            calling dom.set_text with (hs at 0), item->title
+        banish hs
+    var btn as result of list of dom.Element to js.JsError is calling dom.query_all_under with node, "[data-toggle]"
+    if btn.is_ok:
+        var bs as list of dom.Element is btn.value
+        if bs.len > 0:
+            calling dom.set_attr with (bs at 0), "data-id", item->id
+            if item->done:
+                calling dom.add_class with (bs at 0), "done"
+            else:
+                calling dom.remove_class with (bs at 0), "done"
+        banish bs
+
+weave main into int:
+    var a as ref to App is calling app
+    calling tela.register_int with "count", a->count
+    calling tela.register_bool with "empty", a->empty
+    calling tela.register_handler with "add", on_add
+    calling tela.register_handler with "toggle", on_toggle
+    calling tela.register_each of Task with task_key, bind_task, "tasks", a->tasks
+    calling tela.mount with "#app"
+    calling refresh
+    return 0

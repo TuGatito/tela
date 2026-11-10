@@ -1341,6 +1341,8 @@ Sin push; el usuario hace `git push`.
 
 ## 14. Estado de implementación (0.1.0 / psc 0.55.1)
 
+> Actualización 0.2.0 / psc 0.56.0 al final de este documento.
+
 Implementado y validado:
 
 - `tela` 0.1.0: señales, `derived1`, efectos, `batch`, registro tipado
@@ -1352,7 +1354,7 @@ Implementado y validado:
   válidas (`Rc<T>`/`WeakRc<T>`/`OrderedMap<T>`) y `std.web.event.kind`.
 - Ejemplos: contador, TodoMVC (add/toggle/filtros/clear/left) y tarjetas con
   `each` + `conditional`, compilando a wasm y verificados en Chromium headless.
-- Tests: `tests/core` (3 tests nativos), `tests/regress_generic_method_interp.sh`,
+- Tests: `tests/core` (4 tests nativos), `tests/regress_generic_method_interp.sh`,
   `tests/regress_generic_concept_method.sh`, `tests/regress_fn_only_rune.sh`,
   `tests/regress_void_generic_arg.sh`.
 - Documentación en `docs/en/` y `docs/es/`, README bilingüe, LICENSE MIT.
@@ -1380,8 +1382,40 @@ build/psc version                      # psc 0.55.1 (F13)
 
 # tela
 cd /home/tugatito/Documentos/GitHub/tela
-(cd tests/core && psc test)             # All 3 test(s) passed
+(cd tests/core && psc test)             # All 4 test(s) passed
 (cd examples/counter && psc build)
 (cd examples/todomvc && psc build)
 (cd examples/cards && psc build)
+```
+
+---
+
+## 15. Estado de implementación (0.2.0 / psc 0.56.0)
+
+Implementado y validado:
+
+- Runtime: dependencias por observer con limpieza (`track_cell`), guard de
+  ciclos en `flush`, liberación real de observers y señales registradas.
+- `data-tela-if` estructural con ancla de comentario y clon conservado.
+- `data-tela-each` declarativo sobre `<template>` con binder explícito
+  (`register_each`), reutilización por clave, actualización y liberación.
+- Delegación con `closest` para `click/keydown/submit/input/change`.
+- `Scope`, `scope_add`, `on_cleanup`, `scope_dispose`.
+- Inputs numéricos two-way (`data-tela-value-int/-float`), checkbox booleano.
+- Router History API (`navigate_history`, `on_history_change`, `off_history`)
+  en `std.web.router`.
+- `std.web.dom` 0.56: `closest`, `query_all_under`, fragmentos, comentarios,
+  `template_content`, `parent`, `children`, `matches`.
+- Ejemplo nuevo `examples/board` (if + each declarativos + delegación).
+- Test de navegador `tests/browser/run-board.sh`.
+
+Comandos:
+
+```sh
+cd /home/tugatito/Documentos/GitHub/PenguScript
+build/psc version                      # psc 0.56.0 (F13)
+./tests/run.sh                         # OK 168
+cd /home/tugatito/Documentos/GitHub/tela
+(cd tests/core && psc test)             # 4 tests
+tests/browser/run-board.sh              # OK tela browser
 ```

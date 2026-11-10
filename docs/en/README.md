@@ -1,12 +1,11 @@
-# tela — English manual
+# tela — English manual (0.2.0)
 
 `tela` is a reactive UI layer for PenguScript/WASM. It is deliberately small:
-signals, derived values, effects, explicit DOM bindings, keyed lists and a
-structural conditional. There is no router, SSR, CSS-in-JS or virtual DOM.
+signals, derived values, effects, explicit DOM bindings, keyed lists,
+structural conditionals, declarative templates and scopes. There is no router
+inside `tela` (use `std.web.router`), no SSR, no CSS-in-JS and no virtual DOM.
 
 ## Install
-
-In a PenguScript project:
 
 ```toml
 [dependencies.tela]
@@ -25,9 +24,7 @@ rune App:
     zero as tela.Signal of bool
 
 weave app into ref to App:
-    static var a as App is with
-        count is (calling tela.signal with 0),
-        zero is (calling tela.signal with true)
+    static var a as App is with count is (calling tela.signal with 0), zero is (calling tela.signal with true)
     return sigil of a
 ```
 
@@ -42,24 +39,21 @@ weave signal shard T with initial as T into Signal of T
 enchanting Signal shard T:
     weave get into T
     weave set with v as T into void
+    weave update with f as (weave with v as T into T) into void
     weave dispose into void
 ```
 
-`set` marks subscribers dirty and schedules a flush. A flush runs in a browser
-macrotask; call `tela.flush_now` in native tests. `batch` groups writes:
+`set` marks subscribers dirty and schedules a flush. Event handlers flush at
+the end of the delegated dispatch; outside handlers call `tela.flush_now()` in
+native tests. `batch` groups writes:
 
 ```pengu
-weave write_pair into void:
-    var a as ref to App is calling app
-    calling tela.set_int with a->count, 1
-    calling tela.set_int with a->count, 2
-
 calling tela.batch with write_pair
 ```
 
-Use `tela.set_int` and `tela.set_bool` from event handlers when
-the receiver is a field; this avoids a compiler specialization edge case in
-method calls on generic fields. Direct `signal.set(v)` is used everywhere else.
+Signals registered with `register_*` are owned by the registry and freed by
+`shutdown`; an unregistered signal is owned by the caller and freed with
+`dispose` (which panics if it is registered).
 
 ## Derived values
 
@@ -71,22 +65,32 @@ var d as tela.Derived of int, bool is calling tela.derived1 with is_zero, a->cou
 calling d.get
 ```
 
-`derived1<A, B>(f, source)` returns a `Derived of A, B`. `get` recomputes and
-tracks the current observer; it is correct, not cached.
+`derived1<A, B>(f, source)` returns `Derived of A, B`. `get` recomputes on
+each read and registers the current observer's dependency; it is correct, not
+cached.
 
-## Effects
+## Effects and scopes
 
 ```pengu
-weave on_change with ctx as ref to void into void:
+weave tick with ctx as ref to void into void:
     ...
 
-var e as tela.Effect is calling tela.effect with on_change, (transmute 0 to ref to void)
+var e as tela.Effect is calling tela.effect with tick, (transmute 0 to ref to void)
 calling tela.dispose_effect with e
 ```
 
-Effects run immediately and again after any signal they read changes. They are
-explicitly disposed; `Subscription.dispose` disposes the effect and runs its
-cleanup.
+Effects run immediately and again after any tracked signal changes. A
+`Scope` groups subscriptions and cleanups:
+
+```pengu
+var sc as tela.Scope is calling tela.scope
+calling tela.scope_add with sc, (calling tela.bind_int with node, a->count)
+calling tela.on_cleanup with sc, cleanup_fn, ctx
+calling tela.scope_dispose with sc
+```
+
+`tela.shutdown` disposes the mount, registered signals and scopes. Do not use
+the runtime after it.
 
 ## Registry and declarative bindings
 
@@ -99,74 +103,114 @@ calling tela.mount with "#app"
 
 | Attribute | Meaning |
 |---|---|
-| `data-tela-text="name"` | `textContent` from a string/int/float/bool text entry |
+| `data-tela-text="name"` | `textContent` from a text entry |
 | `data-tela-html-unsafe="name"` | raw `innerHTML`; the caller owns escaping |
 | `data-tela-show="name"` | toggles the `hidden` attribute |
+| `data-tela-if="name"` | keeps/rebuilds the element from a `Signal<bool>` |
 | `data-tela-value="name"` | two-way string input |
+| `data-tela-value-int="name"` | two-way int input (invalid text is ignored) |
+| `data-tela-value-float="name"` | two-way float input |
 | `data-tela-checked="name"` | two-way checkbox, `Signal<bool>` |
 | `data-tela-attr-NAME="name"` | sets attribute `NAME` |
 | `data-tela-class-NAME="name"` | toggles class `NAME` |
 | `data-tela-style-PROP="name"` | sets `style.PROP` |
-| `data-tela-on-EVENT="handler"` | delegated event handler |
+| `data-tela-on-EVENT="handler"` | delegated handler (`click`, `keydown`, `submit`, `input`, `change`) |
+| `data-tela-each="name"` | declarative keyed list, see below |
 
-Names are plain identifiers. There is no expression parser. Registration
-borrows the signal; the app owns it. Duplicate names panic.
+Names are plain identifiers; there is no expression parser. Registration
+borrows the signal. Duplicate names panic. Unknown `data-tela-*` attributes
+panic at mount.
 
-## Lists
+`data-tela-if` clones the template once and replaces it with a comment anchor.
+While the condition is true the clone stays; when it becomes false the clone
+and its subscriptions are disposed, and a fresh clone is rendered on the next
+true. `data-tela-each` rebuilds row content through an explicit binder, so
+there is no field reflection.
+
+## Declarative lists
 
 ```pengu
-weave key with c as ref to Card into string:
-    return c->id
+weave key with item as ref to Task into string:
+    return item->id
 
-weave render with c as ref to Card into tela.Elem:
+weave bind_row with item as ref to Task, node as tela.Elem into void:
+    var r as result of list of tela.Elem to js.JsError is calling dom.query_all_under with node, "[data-field=title]"
     ...
 
-weave update with c as ref to Card, el as tela.Elem into void:
-    ...
+calling tela.register_each of Task with key, bind_row, "tasks", a->tasks
+```
 
+```html
+<ul>
+  <template data-tela-each="tasks">
+    <li><span data-field="title"></span></li>
+  </template>
+</ul>
+```
+
+`register_each` takes callbacks first (a parser limitation), then the name and
+the source signal. The template is cloned per key; `bind_row` fills the clone
+on creation and on every update. Removed keys are disposed and removed.
+The binder owns keyed identity; `data-tela-key` is ignored.
+
+## Programmatic lists and conditional
+
+```pengu
 var sub as tela.Subscription is calling tela.each with key, render, update, container, signal
+var c as tela.Subscription is calling tela.conditional with then_view, else_view, container, cond
 ```
 
-`each` reuses nodes by key, calls `update` for existing keys, renders new keys,
-removes missing keys and appends in source order. A `Subscription` is returned;
-dispose it when the list is torn down.
+`each` reuses nodes by key and appends in source order. The callbacks take a
+`dummy as int` parameter in `conditional` because this compiler loses the
+`dom.Element` alias in zero-argument function types.
 
-## Structural conditional
+## Events
+
+Common events (`click`, `keydown`, `submit`, `input`, `change`) are delegated:
+one listener on `document`, `closest("[data-tela-on-EVENT]")` walks up from the
+real target. Clicking a child of a button therefore works. Handlers receive
+the `event.Event` and can read `event.target` with `dom.wrap`. Other event names
+fall back to a listener on the node.
+
+## Forms
 
 ```pengu
-weave then_view with dummy as int into tela.Elem:
-    ...
-
-weave else_view with dummy as int into tela.Elem:
-    ...
-
-var sub as tela.Subscription is calling tela.conditional with then_view, else_view, container, cond
+calling tela.register_value_int with "age", a->age
+calling tela.register_value_float with "score", a->score
 ```
 
-The dummy `int` parameter exists because this compiler loses the `dom.Element`
-alias in zero-argument function types.
+`data-tela-value-int` / `-float` parse on `input`; invalid input keeps the old
+value. Checkboxes use `data-tela-checked`. Select elements use
+`data-tela-value` with a string signal.
 
-## Programmatic bindings
+## Router
 
-`bind_text`, `bind_int`, `bind_float`, `bind_bool_text`, `bind_show`,
-`bind_class`, `bind_attr`, `bind_style`, `bind_html_unsafe`, `bind_value` and
-`bind_checked` attach the same primitives to nodes you build yourself. They
-return `Subscription` values.
+`std.web.router` now exposes both hash and History routing:
+
+```pengu
+calling router.navigate_history with "/board", false
+calling router.on_history_change with on_route
+calling router.off_history with listener
+```
+
+`navigate_history` calls `pushState`/`replaceState` and does not emit
+`popstate`; render after the call. The listener must be disposed explicitly.
 
 ## Lifecycle
 
-`mount(selector)` scans the root and its descendants, binds every
-`data-tela-*`, installs delegated `input`/`change` listeners and panics on
-unknown attributes. `unmount()` releases mount subscriptions and listeners;
-`shutdown()` also clears the registry and observers. Do not use `tela` after
-`shutdown`.
+`mount(selector)` scans the root and descendants with `query_all_under`,
+binds attributes, installs delegated listeners and stores node handles.
+`unmount()` disposes mount subscriptions, listeners and node handles;
+`shutdown()` also frees registered signals, scopes and each binders.
 
-## Limits (0.1.0)
+## Limits (0.2.0)
 
-- `data-tela-if` and declarative `data-tela-each` are not implemented.
-- No SSR, hydration, router, CSS-in-JS or virtual DOM.
+- No SSR, hydration, CSS-in-JS or virtual DOM.
 - Signals are single-threaded and main-thread only.
-- Generic method calls inside string interpolation are a compiler limitation;
-  assign to a local first.
 - `Signal` values should be copyable (primitives, strings, lists, runes
   without `Drop`).
+- `data-tela-each` uses a binder; there is no field-name registry.
+- Async resources are not built in; use `std.web.js.fetch` with explicit
+  callbacks and a `Scope` cleanup.
+- Generic method calls inside string interpolation are a compiler limitation;
+  assign to a local first.

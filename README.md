@@ -36,9 +36,12 @@ weave main into int:
 </div>
 ```
 
-Build with `psc build --target wasm`. See the counter, TodoMVC and card-list
-examples under `examples/`.
+Build with `psc build --target wasm`. See the counter, TodoMVC, card-list and
+declarative board examples under `examples/`.
+
+`tela` 0.2 adds structural `data-tela-if`, declarative keyed
+`data-tela-each` with an explicit binder, scopes, typed numeric inputs and
+History-API routing through `std.web.router`.
 
 - License: MIT.
-- Scope: MVP 0.1.0. `data-tela-if` and declarative `data-tela-each` are
-  deliberately deferred; use `tela.conditional` and `tela.each`.
+- Compiler: `psc` 0.56.0 or newer.

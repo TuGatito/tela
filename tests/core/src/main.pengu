@@ -20,6 +20,17 @@ weave batch_work into void:
 weave double with n as int into int:
     return n * 2
 
+rune Clean:
+    n as int
+
+weave clean into ref to Clean:
+    static var c as Clean is with n is 0
+    return sigil of c
+
+weave bump_clean with ctx as ref to void into void:
+    var c as ref to Clean is calling clean
+    set c->n is c->n + 1
+
 weave main into int:
     return 0
 
@@ -51,3 +62,12 @@ test "effect runs and batches":
     calling tela.flush_now
     calling ward.assert_eq_int with t->hits, 13
     calling tela.dispose_effect with e
+
+test "scope cleanup":
+    var c as ref to Clean is calling clean
+    set c->n is 0
+    var sc as tela.Scope is calling tela.scope
+    calling tela.on_cleanup with sc, bump_clean, (transmute 0 to ref to void)
+    calling ward.assert_eq_int with c->n, 0
+    calling tela.scope_dispose with sc
+    calling ward.assert_eq_int with c->n, 1

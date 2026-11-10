@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>tela board</title></head>
+<body>
+<div id="app">
+  <h1>Tasks: <span data-tela-text="count"></span></h1>
+  <button data-tela-on-click="add">Add task</button>
+  <p data-tela-if="empty">No tasks yet.</p>
+  <ul id="tasks">
+    <template data-tela-each="tasks">
+      <li class="task"><button data-toggle data-tela-on-click="toggle">done</button><span class="title" data-field="title"></span></li>
+    </template>
+  </ul>
+</div>
+<script>var Module = {};</script>
+{{{ SCRIPT }}}
+</body>
+</html>
